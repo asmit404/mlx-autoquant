@@ -24,10 +24,11 @@ jobs:
         shell: bash
         run: |
           pip install --upgrade pip
+          pip install ruff mypy pytest
           if [ "$RUNNER_OS" = "macOS" ]; then
-            pip install -e ".[dev]"
+            pip install -e .
           else
-            pip install -e ".[dev]" --no-deps
+            pip install -e . --no-deps
           fi
       - name: Lint
         run: ruff check src tests
