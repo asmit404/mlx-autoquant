@@ -177,6 +177,21 @@ class TestCli(unittest.TestCase):
         ):
             cli._download_weights("nope", None)
 
+    def test_download_weights_ignores_repo_folders_without_size(self) -> None:
+        class RepoFolder:
+            pass
+
+        files = ["folder/", "model.safetensors"]
+        api = mock.Mock()
+        api.list_repo_files.return_value = files
+        api.get_paths_info.return_value = [RepoFolder(), mock.Mock(size=700)]
+        with (
+            mock.patch("huggingface_hub.HfApi", return_value=api),
+            mock.patch("huggingface_hub.hf_hub_download") as download,
+        ):
+            cli._download_weights("example/model", "main")
+        download.assert_called_once_with("example/model", "model.safetensors", revision="main")
+
     def test_activity_bar_starts_and_stops(self) -> None:
         with mock.patch("tqdm.tqdm"), cli._activity_bar("Quantizing model"):
             pass

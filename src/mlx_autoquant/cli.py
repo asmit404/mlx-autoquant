@@ -44,7 +44,7 @@ def _download_weights(model_id: str, revision: str | None) -> None:
     """Download every repo file into the default HF cache behind one progress bar."""
     try:
         from huggingface_hub import HfApi, hf_hub_download
-        from huggingface_hub.utils import disable_progress_bars
+        from huggingface_hub.utils.tqdm import disable_progress_bars
         from tqdm import tqdm
     except ImportError as error:
         raise RuntimeError("Install dependencies with: pip install -e .") from error
@@ -52,12 +52,19 @@ def _download_weights(model_id: str, revision: str | None) -> None:
     try:
         api = HfApi()
         files = sorted(api.list_repo_files(model_id, revision=revision))
-        sizes = [info.size for info in api.get_paths_info(model_id, files, revision=revision)]
+        paths_info = api.get_paths_info(model_id, files, revision=revision)
+        entries = []
+        for name, info in zip(files, paths_info, strict=True):
+            size = getattr(info, "size", None)
+            if size is None:
+                continue
+            entries.append((name, int(size)))
     except Exception as error:
         message = str(error).splitlines()[0] or error.__class__.__name__
         raise RuntimeError(f"Could not list files for {model_id!r}: {message}") from error
-    with tqdm(total=sum(sizes), unit="B", unit_scale=True, desc="Downloading weights") as bar:
-        for name, size in zip(files, sizes, strict=True):
+    total_bytes = sum(size for _, size in entries)
+    with tqdm(total=total_bytes, unit="B", unit_scale=True, desc="Downloading weights") as bar:
+        for name, size in entries:
             try:
                 hf_hub_download(model_id, name, revision=revision)
             except Exception as error:
@@ -71,7 +78,7 @@ def _fetch_metadata(
 ) -> tuple[Path, int | None]:
     try:
         from huggingface_hub import HfApi, snapshot_download
-        from huggingface_hub.utils import disable_progress_bars
+        from huggingface_hub.utils.tqdm import disable_progress_bars
     except ImportError as error:
         raise RuntimeError("Install dependencies with: pip install -e .") from error
     disable_progress_bars()
