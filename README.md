@@ -8,6 +8,14 @@ It reads your unified-memory capacity, profiles `config.json` and Hugging Face s
 
 ## Install
 
+Install the released package from PyPI:
+
+```bash
+pip install mlx-autoquant
+```
+
+For local development:
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
