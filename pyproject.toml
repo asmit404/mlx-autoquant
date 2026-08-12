@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mlx-autoquant"
+description = "Hardware-aware Hugging Face to MLX quantizer"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["mlx", "quantization", "apple-silicon", "llm"]
+dependencies = ["mlx-lm>=0.30.0", "huggingface-hub>=0.24.0"]
+dynamic = ["version"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.6", "mypy>=1.11"]
+
+[project.scripts]
+mlx-autoquant = "mlx_autoquant.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.dynamic]
+version = { attr = "mlx_autoquant.__version__" }
+
+[tool.setuptools.package-data]
+mlx_autoquant = ["py.typed"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.10"
+packages = ["mlx_autoquant"]
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = ["mlx_lm.*", "huggingface_hub.*"]
+follow_imports = "skip"
