@@ -17,7 +17,7 @@ def _fetch_metadata(
 ) -> tuple[Path, int | None]:
     try:
         from huggingface_hub import HfApi, snapshot_download
-        from huggingface_hub.utils import disable_progress_bars
+        from huggingface_hub.utils.tqdm import disable_progress_bars
     except ImportError as error:
         raise RuntimeError("Install dependencies with: pip install -e .") from error
     disable_progress_bars()
