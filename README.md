@@ -41,7 +41,7 @@ Add `--json` for machine-readable output (progress bars are suppressed during do
 mlx-autoquant Qwen/Qwen2.5-7B-Instruct --dry-run --json
 ```
 
-Each completed conversion writes `autoquant-report.json` next to the MLX model. It records the detected machine, the model dimensions, the selected bits, and the memory assumptions. Parameter counts come from the safetensors weight index (`model.safetensors.index.json`); when a repository has no index, the tool falls back to an estimate from `config.json` and labels it as such.
+Each completed conversion writes `autoquant-report.json` next to the MLX model. It records the detected machine, the model dimensions, the selected bits, and the memory assumptions. Parameter counts come from Hugging Face's safetensors metadata; when a repository has no safetensors weights, the tool falls back to an estimate from `config.json` and labels it as such.
 
 Errors are printed to stderr with a non-zero exit code instead of a traceback. Downloads are cached under `~/.cache/mlx-autoquant`; set `HF_HOME` to move the Hugging Face cache, and `HF_TOKEN` to authenticate private or gated models.
 
@@ -51,7 +51,7 @@ Errors are printed to stderr with a non-zero exit code instead of a traceback. D
 - Supports standard Transformers checkpoints with `config.json`; remote code is opt-in.
 - A 15% conversion/sharding allowance and a 25% (minimum 4 GiB) system reserve make the automatic choice conservative.
 - The user can always choose `--bits`, but the command intentionally displays the resulting plan first.
-- Without a weight index, parameter counts are estimates; the report and summary mark them as estimated.
+- Without safetensors weights, parameter counts are estimates; the report and summary mark them as estimated.
 
 ## Development
 

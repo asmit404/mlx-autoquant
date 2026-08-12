@@ -29,16 +29,13 @@ def metadata(tmp: Path, params: int = 7_000_000_000, exact: bool = True):
             }
         )
     )
-    index = tmp / "model.safetensors.index.json"
-    if exact:
-        index.write_text(json.dumps({"metadata": {"total_size": params * 2}}))
-    return config, index if exact else None
+    return config, params if exact else None
 
 
 def patch_metadata(params: int = 7_000_000_000, exact: bool = True):
     tmp = tempfile.TemporaryDirectory()
     return tmp, mock.patch(
-        "mlx_autoquant.cli._download_metadata", return_value=metadata(Path(tmp.name), params, exact)
+        "mlx_autoquant.cli._fetch_metadata", return_value=metadata(Path(tmp.name), params, exact)
     )
 
 
@@ -64,7 +61,7 @@ class TestCli(unittest.TestCase):
                 rc = cli.main(["example/model", "--dry-run"])
         tmp.cleanup()
         self.assertEqual(rc, 0)
-        self.assertIn("7B (from weight index)", out.getvalue())
+        self.assertIn("7B (from safetensors metadata)", out.getvalue())
 
     def test_bits_override(self) -> None:
         tmp, patched = patch_metadata()
@@ -101,7 +98,7 @@ class TestCli(unittest.TestCase):
     def test_clean_error_message_on_stdout_errors(self) -> None:
         with (
             mock.patch(
-                "mlx_autoquant.cli._download_metadata",
+                "mlx_autoquant.cli._fetch_metadata",
                 side_effect=RuntimeError("Could not fetch metadata for 'nope'"),
             ),
             mock.patch("mlx_autoquant.cli.detect_hardware", return_value=HW),

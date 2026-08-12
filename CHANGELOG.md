@@ -8,8 +8,9 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- Exact parameter counts from `model.safetensors.index.json` (fallback to a
-  config-based estimate when no index exists).
+- Exact parameter counts from Hugging Face safetensors metadata (fallback to a
+  config-based estimate, including MoE-aware estimation, for repos without
+  safetensors weights).
 - Human-readable CLI summary with `--json` for machine-readable output.
 - Clean error handling: errors go to stderr with a non-zero exit code.
 - CI (lint, format, type check, tests on macOS and Linux) and a tag-triggered

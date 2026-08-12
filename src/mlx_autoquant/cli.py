@@ -12,34 +12,38 @@ from .model import ModelProfile, profile_config
 from .planner import QuantizationPlan, choose_quantization, estimated_model_gib
 
 
-def _download_metadata(
+def _fetch_metadata(
     model_id: str, revision: str | None, cache_dir: Path
-) -> tuple[Path, Path | None]:
+) -> tuple[Path, int | None]:
     try:
-        from huggingface_hub import snapshot_download
+        from huggingface_hub import HfApi, snapshot_download
         from huggingface_hub.utils import disable_progress_bars
     except ImportError as error:
         raise RuntimeError("Install dependencies with: pip install -e .") from error
     disable_progress_bars()
     try:
-        path = Path(
-            snapshot_download(
-                repo_id=model_id,
-                revision=revision,
-                allow_patterns=["config.json", "model.safetensors.index.json"],
-                cache_dir=str(cache_dir),
+        config = (
+            Path(
+                snapshot_download(
+                    repo_id=model_id,
+                    revision=revision,
+                    allow_patterns=["config.json"],
+                    cache_dir=str(cache_dir),
+                )
             )
+            / "config.json"
         )
+        info = HfApi().model_info(model_id, revision=revision, files_metadata=True)
     except Exception as error:
         message = str(error).splitlines()[0] or error.__class__.__name__
         raise RuntimeError(f"Could not fetch metadata for {model_id!r}: {message}") from error
-    config = path / "config.json"
     if not config.exists():
         raise RuntimeError(
             "The repository has no config.json; it is not a supported Transformers checkpoint."
         )
-    index = path / "model.safetensors.index.json"
-    return config, index if index.exists() else None
+    safetensors = getattr(info, "safetensors", None)
+    exact = getattr(safetensors, "total", None) if safetensors is not None else None
+    return config, int(exact) if exact else None
 
 
 def _write_report(
@@ -74,7 +78,7 @@ def _format_params(parameters: int) -> str:
 
 def _print_summary(hardware: HardwareProfile, model: ModelProfile, plan: QuantizationPlan) -> None:
     count_label = (
-        f"{_format_params(model.parameters)} (from weight index)"
+        f"{_format_params(model.parameters)} (from safetensors metadata)"
         if model.parameters_exact
         else f"~{_format_params(model.parameters)} (estimated from config.json)"
     )
@@ -100,10 +104,10 @@ def _print_summary(hardware: HardwareProfile, model: ModelProfile, plan: Quantiz
 
 def _run(args: argparse.Namespace) -> int:
     hardware = detect_hardware()
-    config, index = _download_metadata(
+    config, exact = _fetch_metadata(
         args.model, args.revision, Path.home() / ".cache" / "mlx-autoquant"
     )
-    model = profile_config(args.model, config, index)
+    model = profile_config(args.model, config, exact)
     plan = choose_quantization(hardware, model, args.context_length)
     if args.bits:
         plan = replace(
