@@ -3,6 +3,9 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import threading
+import time
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -12,12 +15,63 @@ from .model import ModelProfile, profile_config
 from .planner import QuantizationPlan, choose_quantization, estimated_model_gib
 
 
+@contextmanager
+def _activity_bar(desc: str) -> Any:
+    from tqdm import tqdm
+
+    bar = tqdm(
+        total=100, desc=desc, leave=False, mininterval=0.05, bar_format="{l_bar}{bar}| {elapsed}"
+    )
+    stop = threading.Event()
+
+    def spin() -> None:
+        while not stop.is_set():
+            bar.n = (bar.n + 1) % 100
+            bar.refresh()
+            time.sleep(0.08)
+
+    thread = threading.Thread(target=spin, daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join()
+        bar.close()
+
+
+def _download_weights(model_id: str, revision: str | None) -> None:
+    """Download every repo file into the default HF cache behind one progress bar."""
+    try:
+        from huggingface_hub import HfApi, hf_hub_download
+        from huggingface_hub.utils import disable_progress_bars
+        from tqdm import tqdm
+    except ImportError as error:
+        raise RuntimeError("Install dependencies with: pip install -e .") from error
+    disable_progress_bars()
+    try:
+        api = HfApi()
+        files = sorted(api.list_repo_files(model_id, revision=revision))
+        sizes = [info.size for info in api.get_paths_info(model_id, files, revision=revision)]
+    except Exception as error:
+        message = str(error).splitlines()[0] or error.__class__.__name__
+        raise RuntimeError(f"Could not list files for {model_id!r}: {message}") from error
+    with tqdm(total=sum(sizes), unit="B", unit_scale=True, desc="Downloading weights") as bar:
+        for name, size in zip(files, sizes, strict=True):
+            try:
+                hf_hub_download(model_id, name, revision=revision)
+            except Exception as error:
+                message = str(error).splitlines()[0] or error.__class__.__name__
+                raise RuntimeError(f"Could not download {name!r}: {message}") from error
+            bar.update(size)
+
+
 def _fetch_metadata(
     model_id: str, revision: str | None, cache_dir: Path
 ) -> tuple[Path, int | None]:
     try:
         from huggingface_hub import HfApi, snapshot_download
-        from huggingface_hub.utils.tqdm import disable_progress_bars
+        from huggingface_hub.utils import disable_progress_bars
     except ImportError as error:
         raise RuntimeError("Install dependencies with: pip install -e .") from error
     disable_progress_bars()
@@ -138,16 +192,22 @@ def _run(args: argparse.Namespace) -> int:
         raise RuntimeError(
             "Install dependencies on an Apple-silicon Mac: pip install -e ."
         ) from error
-    convert(
-        args.model,
-        mlx_path=str(args.output),
-        quantize=True,
-        q_group_size=plan.group_size,
-        q_bits=plan.bits,
-        q_mode=plan.mode,
-        revision=args.revision,
-        trust_remote_code=args.trust_remote_code,
-    )
+    print()
+    print("Downloading model weights...")
+    _download_weights(args.model, args.revision)
+    print()
+    print("Quantizing model...")
+    with _activity_bar("Quantizing model"):
+        convert(
+            args.model,
+            mlx_path=str(args.output),
+            quantize=True,
+            q_group_size=plan.group_size,
+            q_bits=plan.bits,
+            q_mode=plan.mode,
+            revision=args.revision,
+            trust_remote_code=args.trust_remote_code,
+        )
     report = _write_report(args.output, hardware, model, plan, args.revision)
     print(f"Saved quantized model to {args.output}; report: {report}")
     return 0
@@ -179,6 +239,10 @@ def main(argv: list[str] | None = None) -> int:
         return _run(args)
     except RuntimeError as error:
         print(f"error: {error}", file=sys.stderr)
+        return 1
+    except Exception as error:
+        message = str(error).splitlines()[0] or error.__class__.__name__
+        print(f"error: {error.__class__.__name__}: {message}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         print("interrupted", file=sys.stderr)

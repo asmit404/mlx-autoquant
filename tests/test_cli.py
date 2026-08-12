@@ -95,6 +95,20 @@ class TestCli(unittest.TestCase):
                 rc = cli.main(["example/model"])
         self.assertEqual(rc, 130)
 
+    def test_unexpected_error_reported_cleanly(self) -> None:
+        with (
+            mock.patch(
+                "mlx_autoquant.cli._run",
+                side_effect=ValueError("Received 64 parameters not in model"),
+            ),
+            mock.patch("mlx_autoquant.cli.detect_hardware", return_value=HW),
+        ):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                rc = cli.main(["example/model"])
+        self.assertEqual(rc, 1)
+        self.assertIn("error: ValueError: Received 64 parameters", err.getvalue())
+
     def test_clean_error_message_on_stdout_errors(self) -> None:
         with (
             mock.patch(
@@ -134,6 +148,38 @@ class TestCli(unittest.TestCase):
         self.assertEqual(cli._format_params(125_000_000), "125M")
         self.assertEqual(cli._format_params(55_000_000), "55M")
         self.assertEqual(cli._format_params(500), "500")
+
+    def test_download_weights_downloads_every_file(self) -> None:
+        files = ["config.json", "model-00001-of-00002.safetensors", "model.safetensors.index.json"]
+        infos = [mock.Mock(size=100), mock.Mock(size=900), mock.Mock(size=50)]
+        api = mock.Mock()
+        api.list_repo_files.return_value = files
+        api.get_paths_info.return_value = infos
+        with (
+            mock.patch("huggingface_hub.HfApi", return_value=api),
+            mock.patch("huggingface_hub.hf_hub_download") as download,
+        ):
+            cli._download_weights("example/model", "main")
+        download.assert_has_calls(
+            [
+                mock.call("example/model", "config.json", revision="main"),
+                mock.call("example/model", "model-00001-of-00002.safetensors", revision="main"),
+                mock.call("example/model", "model.safetensors.index.json", revision="main"),
+            ]
+        )
+
+    def test_download_weights_clean_error(self) -> None:
+        api = mock.Mock()
+        api.list_repo_files.side_effect = Exception("Repository Not Found for url")
+        with (
+            mock.patch("huggingface_hub.HfApi", return_value=api),
+            self.assertRaisesRegex(RuntimeError, "Could not list files"),
+        ):
+            cli._download_weights("nope", None)
+
+    def test_activity_bar_starts_and_stops(self) -> None:
+        with mock.patch("tqdm.tqdm"), cli._activity_bar("Quantizing model"):
+            pass
 
 
 if __name__ == "__main__":

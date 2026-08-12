@@ -12,6 +12,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   config-based estimate, including MoE-aware estimation, for repos without
   safetensors weights).
 - Human-readable CLI summary with `--json` for machine-readable output.
+- Two-phase progress bars: an aggregate download bar for the weights, then an
+  activity bar during quantization.
 - Clean error handling: errors go to stderr with a non-zero exit code.
 - CI (lint, format, type check, tests on macOS and Linux) and a tag-triggered
   PyPI release workflow using Trusted Publishing.

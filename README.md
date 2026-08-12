@@ -45,6 +45,8 @@ Each completed conversion writes `autoquant-report.json` next to the MLX model. 
 
 Errors are printed to stderr with a non-zero exit code instead of a traceback. Downloads are cached under `~/.cache/mlx-autoquant`; set `HF_HOME` to move the Hugging Face cache, and `HF_TOKEN` to authenticate private or gated models.
 
+During a real conversion you get two progress indicators: an aggregate bar while the weights download, then an activity bar while the model is quantized.
+
 ## Design boundaries
 
 - Apple silicon only: MLX does not run on other hardware.
