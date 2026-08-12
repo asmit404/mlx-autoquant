@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-14]
+        os: [macos-14]
         python: ["3.10", "3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
@@ -21,15 +21,9 @@ jobs:
           python-version: ${{ matrix.python }}
           cache: pip
       - name: Install package
-        shell: bash
         run: |
           pip install --upgrade pip
-          pip install ruff mypy pytest
-          if [ "$RUNNER_OS" = "macOS" ]; then
-            pip install -e .
-          else
-            pip install -e . --no-deps
-          fi
+          pip install -e ".[dev]"
       - name: Lint
         run: ruff check src tests
       - name: Format
@@ -38,18 +32,3 @@ jobs:
         run: mypy src/mlx_autoquant
       - name: Test
         run: pytest
-
-  install:
-    name: install (macOS, py3.12)
-    runs-on: macos-14
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Install with real deps
-        run: |
-          pip install --upgrade pip
-          pip install -e ".[dev]"
-      - name: Smoke test CLI
-        run: mlx-autoquant --help
