@@ -21,6 +21,19 @@ class QuantizationPlan:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class QuantizationOption:
+    bits: int
+    estimated_model_gib: float
+    fits: bool
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+SUPPORTED_BITS = (8, 7, 6, 5, 4, 3, 2)
+
+
 def estimated_model_gib(parameters: int, bits: int, group_size: int = 64) -> float:
     # Packed weights + fp16 scale/bias per group, then a 15% runtime/shard allowance.
     bytes_per_weight = bits / 8 + 4 / group_size
@@ -32,33 +45,56 @@ def estimated_kv_cache_gib(model: ModelProfile, context_length: int) -> float:
     return values * 2 / 1024**3  # fp16 K and V
 
 
+def _model_budget(
+    hardware: HardwareProfile, model: ModelProfile, context_length: int
+) -> tuple[float, float]:
+    kv_gib = estimated_kv_cache_gib(model, context_length)
+    reserve_gib = max(4.0, hardware.memory_gib * 0.25)
+    return kv_gib, hardware.memory_gib - reserve_gib - kv_gib
+
+
+def quantization_options(
+    hardware: HardwareProfile,
+    model: ModelProfile,
+    context_length: int = 4096,
+    group_size: int = 64,
+) -> tuple[QuantizationOption, ...]:
+    if not hardware.is_apple_silicon:
+        raise RuntimeError("MLX quantization requires an Apple-silicon Mac.")
+    _, budget_gib = _model_budget(hardware, model, context_length)
+    return tuple(
+        QuantizationOption(
+            bits,
+            round(estimated_model_gib(model.parameters, bits, group_size), 2),
+            estimated_model_gib(model.parameters, bits, group_size) <= budget_gib,
+        )
+        for bits in SUPPORTED_BITS
+    )
+
+
 def choose_quantization(
     hardware: HardwareProfile,
     model: ModelProfile,
     context_length: int = 4096,
     group_size: int = 64,
 ) -> QuantizationPlan:
-    if not hardware.is_apple_silicon:
-        raise RuntimeError("MLX quantization requires an Apple-silicon Mac.")
-    kv_gib = estimated_kv_cache_gib(model, context_length)
-    # Keep the larger of 4 GiB and 25% for OS, conversion peaks, and user applications.
-    reserve_gib = max(4.0, hardware.memory_gib * 0.25)
-    budget_gib = hardware.memory_gib - reserve_gib - kv_gib
-    for bits in (8, 6, 5, 4, 3, 2):
-        size_gib = estimated_model_gib(model.parameters, bits, group_size)
-        if size_gib <= budget_gib:
+    kv_gib, budget_gib = _model_budget(hardware, model, context_length)
+    reserve_gib = hardware.memory_gib - kv_gib - budget_gib
+    for option in quantization_options(hardware, model, context_length, group_size):
+        if option.fits:
             return QuantizationPlan(
-                bits,
+                option.bits,
                 group_size,
                 "affine",
-                round(size_gib, 2),
+                option.estimated_model_gib,
                 round(kv_gib, 2),
                 round(budget_gib, 2),
                 context_length,
                 f"Highest tested precision fitting {budget_gib:.2f} GiB after a "
                 f"{reserve_gib:.2f} GiB system reserve and KV cache.",
             )
+    smallest = estimated_model_gib(model.parameters, 2, group_size)
     raise RuntimeError(
-        f"Even 2-bit weights need {estimated_model_gib(model.parameters, 2, group_size):.2f} GiB, "
+        f"Even 2-bit weights need {smallest:.2f} GiB, "
         f"but only {budget_gib:.2f} GiB is safely available. Choose a smaller model or context."
     )

@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-13
+
 ### Added
 
 - Exact parameter counts from Hugging Face safetensors metadata (fallback to a
@@ -15,9 +17,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Two-phase progress bars: an aggregate download bar for the weights, then an
   activity bar during quantization.
 - Clean error handling: errors go to stderr with a non-zero exit code.
-- CI (lint, format, type check, tests on macOS and Linux) and a tag-triggered
+- CI (lint, format, type check, tests on macOS) and a tag-triggered
   PyPI release workflow using Trusted Publishing.
 - `python -m mlx_autoquant` entry point, single-sourced version, `py.typed` marker.
+- Post-conversion generation smoke test with peak MLX memory reporting.
+- Config-aware context defaults capped at 8192 tokens.
+- Dry-run comparison of every tested bit-width.
+- Coverage tooling and a real-model macOS integration job.
 
 ### Changed
 

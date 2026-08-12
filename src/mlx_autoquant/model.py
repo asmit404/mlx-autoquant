@@ -15,9 +15,16 @@ class ModelProfile:
     num_key_value_heads: int
     head_dim: int
     parameters_exact: bool = False
+    max_context_length: int | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+    @property
+    def recommended_context_length(self) -> int:
+        if self.max_context_length is None:
+            return 4096
+        return min(self.max_context_length, 8192)
 
 
 def _first(config: dict[str, Any], *names: str, default: int = 0) -> int:
@@ -25,6 +32,21 @@ def _first(config: dict[str, Any], *names: str, default: int = 0) -> int:
         if config.get(name) is not None:
             return int(config[name])
     return default
+
+
+def _context_limit(config: dict[str, Any]) -> int | None:
+    limits = [
+        _first(
+            config,
+            "max_position_embeddings",
+            "max_sequence_length",
+            "max_seq_len",
+            "seq_length",
+        ),
+        _first(config, "sliding_window"),
+    ]
+    limits = [limit for limit in limits if limit > 0]
+    return min(limits) if limits else None
 
 
 def _estimate_parameters(config: dict[str, Any]) -> int:
@@ -67,5 +89,12 @@ def profile_config(
 
     parameters = exact_parameters if exact_parameters is not None else _estimate_parameters(config)
     return ModelProfile(
-        model_id, parameters, layers, hidden, kv_heads, head_dim, exact_parameters is not None
+        model_id,
+        parameters,
+        layers,
+        hidden,
+        kv_heads,
+        head_dim,
+        exact_parameters is not None,
+        _context_limit(config),
     )

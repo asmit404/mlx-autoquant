@@ -88,6 +88,22 @@ class TestProfileConfig(unittest.TestCase):
             profile = profile_config("example/model", write_config(Path(tmp), QWEN))
         self.assertIn("parameters_exact", profile.to_dict())
 
+    def test_recommends_capped_context_length(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = write_config(Path(tmp), {**QWEN, "max_position_embeddings": 131072})
+            profile = profile_config("example/model", config)
+        self.assertEqual(profile.max_context_length, 131072)
+        self.assertEqual(profile.recommended_context_length, 8192)
+
+    def test_recommends_sliding_window_when_smaller(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = write_config(
+                Path(tmp), {**QWEN, "max_position_embeddings": 32768, "sliding_window": 4096}
+            )
+            profile = profile_config("example/model", config)
+        self.assertEqual(profile.max_context_length, 4096)
+        self.assertEqual(profile.recommended_context_length, 4096)
+
 
 if __name__ == "__main__":
     unittest.main()

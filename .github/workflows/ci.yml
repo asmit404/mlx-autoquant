@@ -31,4 +31,25 @@ jobs:
       - name: Type check
         run: mypy src/mlx_autoquant
       - name: Test
-        run: pytest
+        run: pytest --cov=mlx_autoquant --cov-report=term-missing
+
+  integration:
+    name: integration (macOS, py3.12)
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install package
+        run: |
+          pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Convert and verify tiny model
+        run: |
+          output="$(mktemp -d)/mlx-model"
+          mlx-autoquant hf-internal-testing/tiny-random-LlamaForCausalLM \
+            --output "$output" --bits 8
+          test -f "$output/autoquant-report.json"
+          test -f "$output/model.safetensors"

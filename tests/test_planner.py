@@ -2,7 +2,7 @@ import unittest
 
 from mlx_autoquant.hardware import HardwareProfile
 from mlx_autoquant.model import ModelProfile
-from mlx_autoquant.planner import choose_quantization, estimated_model_gib
+from mlx_autoquant.planner import choose_quantization, estimated_model_gib, quantization_options
 
 
 def model(parameters: int = 7_000_000_000) -> ModelProfile:
@@ -23,4 +23,15 @@ class TestPlanner(unittest.TestCase):
         self.assertLess(
             estimated_model_gib(1_000_000_000, 4),
             estimated_model_gib(1_000_000_000, 8),
+        )
+
+    def test_options_include_fit_status_for_each_bit_width(self) -> None:
+        options = quantization_options(HardwareProfile("M4 Max", 64 * 1024**3, True), model())
+        self.assertEqual([option.bits for option in options], [8, 7, 6, 5, 4, 3, 2])
+        self.assertTrue(options[0].fits)
+        self.assertTrue(
+            all(
+                options[i].estimated_model_gib >= options[i + 1].estimated_model_gib
+                for i in range(6)
+            )
         )

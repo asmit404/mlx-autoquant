@@ -1,7 +1,7 @@
 """Hardware-aware conversion of Hugging Face models to MLX."""
 
-from .planner import QuantizationPlan, choose_quantization
+from .planner import QuantizationOption, QuantizationPlan, choose_quantization
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
-__all__ = ["QuantizationPlan", "choose_quantization", "__version__"]
+__all__ = ["QuantizationOption", "QuantizationPlan", "choose_quantization", "__version__"]

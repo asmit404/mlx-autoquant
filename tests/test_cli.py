@@ -26,6 +26,7 @@ def metadata(tmp: Path, params: int = 7_000_000_000, exact: bool = True):
                 "head_dim": 128,
                 "vocab_size": 152064,
                 "intermediate_size": 18944,
+                "max_position_embeddings": 32768,
             }
         )
     )
@@ -52,6 +53,8 @@ class TestCli(unittest.TestCase):
         self.assertEqual(data["plan"]["bits"], 8)
         self.assertEqual(data["model"]["parameters"], 7_000_000_000)
         self.assertTrue(data["model"]["parameters_exact"])
+        self.assertEqual(data["plan"]["context_length"], 8192)
+        self.assertEqual(len(data["options"]), 7)
 
     def test_summary_dry_run_labels_exact_count(self) -> None:
         tmp, patched = patch_metadata()

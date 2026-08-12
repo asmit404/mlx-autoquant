@@ -12,7 +12,14 @@ from typing import Any
 
 from .hardware import HardwareProfile, detect_hardware
 from .model import ModelProfile, profile_config
-from .planner import QuantizationPlan, choose_quantization, estimated_model_gib
+from .planner import (
+    QuantizationOption,
+    QuantizationPlan,
+    choose_quantization,
+    estimated_model_gib,
+    quantization_options,
+)
+from .verify import VerificationResult, verify_model
 
 
 @contextmanager
@@ -108,7 +115,13 @@ def _fetch_metadata(
 
 
 def _write_report(
-    destination: Path, hardware: Any, model: Any, plan: Any, revision: str | None
+    destination: Path,
+    hardware: Any,
+    model: Any,
+    plan: Any,
+    revision: str | None,
+    options: tuple[QuantizationOption, ...] = (),
+    verification: VerificationResult | None = None,
 ) -> Path:
     destination.mkdir(parents=True, exist_ok=True)
     report = destination / "autoquant-report.json"
@@ -118,8 +131,10 @@ def _write_report(
                 "hardware": hardware.to_dict(),
                 "model": model.to_dict(),
                 "plan": plan.to_dict(),
+                "options": [option.to_dict() for option in options],
                 "revision": revision,
                 "parameter_count_is_estimated_from_config": not model.parameters_exact,
+                "verification": verification.to_dict() if verification else {"skipped": True},
             },
             indent=2,
         )
@@ -137,7 +152,12 @@ def _format_params(parameters: int) -> str:
     return str(parameters)
 
 
-def _print_summary(hardware: HardwareProfile, model: ModelProfile, plan: QuantizationPlan) -> None:
+def _print_summary(
+    hardware: HardwareProfile,
+    model: ModelProfile,
+    plan: QuantizationPlan,
+    options: tuple[QuantizationOption, ...] = (),
+) -> None:
     count_label = (
         f"{_format_params(model.parameters)} (from safetensors metadata)"
         if model.parameters_exact
@@ -152,6 +172,7 @@ def _print_summary(hardware: HardwareProfile, model: ModelProfile, plan: Quantiz
         f"  ID:              {model.model_id}",
         f"  Parameters:      {count_label}",
         f"  Layers:          {model.layers}",
+        f"  Context length:  {plan.context_length} tokens",
         "",
         "Plan",
         f"  Quantization:    {plan.bits}-bit {plan.mode} (group size {plan.group_size})",
@@ -160,6 +181,14 @@ def _print_summary(hardware: HardwareProfile, model: ModelProfile, plan: Quantiz
         f"  Available:       {plan.available_for_model_gib:.2f} GiB",
         f"  Rationale:       {plan.rationale}",
     ]
+    if options:
+        lines.extend(["", "Options"])
+        lines.extend(
+            f"  {option.bits}-bit:           {option.estimated_model_gib:.2f} GiB  "
+            f"{'fits' if option.fits else 'does not fit'}"
+            f"{'  <- selected' if option.bits == plan.bits else ''}"
+            for option in options
+        )
     print("\n".join(lines))
 
 
@@ -169,7 +198,9 @@ def _run(args: argparse.Namespace) -> int:
         args.model, args.revision, Path.home() / ".cache" / "mlx-autoquant"
     )
     model = profile_config(args.model, config, exact)
-    plan = choose_quantization(hardware, model, args.context_length)
+    context_length = args.context_length or model.recommended_context_length
+    options = quantization_options(hardware, model, context_length)
+    plan = choose_quantization(hardware, model, context_length)
     if args.bits:
         plan = replace(
             plan,
@@ -180,12 +211,17 @@ def _run(args: argparse.Namespace) -> int:
     if args.json:
         print(
             json.dumps(
-                {"hardware": hardware.to_dict(), "model": model.to_dict(), "plan": plan.to_dict()},
+                {
+                    "hardware": hardware.to_dict(),
+                    "model": model.to_dict(),
+                    "plan": plan.to_dict(),
+                    "options": [option.to_dict() for option in options],
+                },
                 indent=2,
             )
         )
     else:
-        _print_summary(hardware, model, plan)
+        _print_summary(hardware, model, plan, options)
     if args.dry_run:
         if not args.json:
             print()
@@ -215,7 +251,28 @@ def _run(args: argparse.Namespace) -> int:
             revision=args.revision,
             trust_remote_code=args.trust_remote_code,
         )
-    report = _write_report(args.output, hardware, model, plan, args.revision)
+    verification = (
+        None if args.no_verify else verify_model(args.output, max_tokens=args.verify_tokens)
+    )
+    report = _write_report(
+        args.output,
+        hardware,
+        model,
+        plan,
+        args.revision,
+        options,
+        verification,
+    )
+    if verification:
+        peak_memory = (
+            f"{verification.peak_memory_gib:.2f} GiB"
+            if verification.peak_memory_gib is not None
+            else "unavailable"
+        )
+        print(
+            f"Verification passed; generated {verification.generated_tokens} tokens, "
+            f"peak memory: {peak_memory}."
+        )
     print(f"Saved quantized model to {args.output}; report: {report}")
     return 0
 
@@ -228,7 +285,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("model", help="Hugging Face model ID, e.g. Qwen/Qwen2.5-7B-Instruct")
     parser.add_argument("--output", type=Path, default=Path("./mlx-model"))
     parser.add_argument("--revision")
-    parser.add_argument("--context-length", type=int, default=4096)
+    parser.add_argument(
+        "--context-length",
+        type=int,
+        help="Expected context length (default: model config, capped at 8192).",
+    )
     parser.add_argument(
         "--bits", type=int, choices=range(2, 9), help="Override the automatic bit-width."
     )
@@ -238,10 +299,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--json", action="store_true", help="Print machine-readable JSON instead of the summary."
     )
+    parser.add_argument(
+        "--no-verify", action="store_true", help="Skip the post-conversion generation smoke test."
+    )
+    parser.add_argument(
+        "--verify-tokens",
+        type=int,
+        default=8,
+        help="Tokens to generate during verification (default: 8).",
+    )
     parser.add_argument("--trust-remote-code", action="store_true")
     args = parser.parse_args(argv)
-    if args.context_length <= 0:
+    if args.context_length is not None and args.context_length <= 0:
         parser.error("--context-length must be positive")
+    if args.verify_tokens <= 0:
+        parser.error("--verify-tokens must be positive")
     try:
         return _run(args)
     except RuntimeError as error:

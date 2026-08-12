@@ -1,4 +1,4 @@
-.PHONY: install lint format type test check build smoke
+.PHONY: install lint format type test coverage check build smoke
 
 install:
 	python3 -m venv .venv
@@ -19,6 +19,9 @@ type:
 
 test:
 	.venv/bin/python -m pytest
+
+coverage:
+	.venv/bin/python -m pytest --cov=mlx_autoquant --cov-report=term-missing
 
 check: lint format type test
 
