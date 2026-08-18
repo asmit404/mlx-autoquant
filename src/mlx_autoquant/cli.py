@@ -2,16 +2,26 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shutil
 import sys
 import threading
 import time
-from contextlib import contextmanager
+import uuid
+from contextlib import contextmanager, redirect_stdout
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from .errors import (
+    AutoQuantError,
+    CancellationError,
+    ConversionError,
+    InsufficientDiskError,
+    InsufficientMemoryError,
+)
 from .hardware import HardwareProfile, detect_hardware
-from .model import ModelProfile, profile_config
+from .model import ModelProfile
 from .planner import (
     QuantizationOption,
     QuantizationPlan,
@@ -19,6 +29,7 @@ from .planner import (
     estimated_model_gib,
     quantization_options,
 )
+from .preflight import PreflightResult, download_snapshot, preflight
 from .verify import VerificationResult, verify_model
 
 
@@ -47,73 +58,6 @@ def _activity_bar(desc: str) -> Any:
         bar.close()
 
 
-def _download_weights(model_id: str, revision: str | None) -> None:
-    """Download every repo file into the default HF cache behind one progress bar."""
-    try:
-        from huggingface_hub import HfApi, hf_hub_download
-        from huggingface_hub.utils.tqdm import disable_progress_bars
-        from tqdm import tqdm
-    except ImportError as error:
-        raise RuntimeError("Install dependencies with: pip install -e .") from error
-    disable_progress_bars()
-    try:
-        api = HfApi()
-        files = sorted(api.list_repo_files(model_id, revision=revision))
-        paths_info = api.get_paths_info(model_id, files, revision=revision)
-        entries = []
-        for name, info in zip(files, paths_info, strict=True):
-            size = getattr(info, "size", None)
-            if size is None:
-                continue
-            entries.append((name, int(size)))
-    except Exception as error:
-        message = str(error).splitlines()[0] or error.__class__.__name__
-        raise RuntimeError(f"Could not list files for {model_id!r}: {message}") from error
-    total_bytes = sum(size for _, size in entries)
-    with tqdm(total=total_bytes, unit="B", unit_scale=True, desc="Downloading weights") as bar:
-        for name, size in entries:
-            try:
-                hf_hub_download(model_id, name, revision=revision)
-            except Exception as error:
-                message = str(error).splitlines()[0] or error.__class__.__name__
-                raise RuntimeError(f"Could not download {name!r}: {message}") from error
-            bar.update(size)
-
-
-def _fetch_metadata(
-    model_id: str, revision: str | None, cache_dir: Path
-) -> tuple[Path, int | None]:
-    try:
-        from huggingface_hub import HfApi, snapshot_download
-        from huggingface_hub.utils.tqdm import disable_progress_bars
-    except ImportError as error:
-        raise RuntimeError("Install dependencies with: pip install -e .") from error
-    disable_progress_bars()
-    try:
-        config = (
-            Path(
-                snapshot_download(
-                    repo_id=model_id,
-                    revision=revision,
-                    allow_patterns=["config.json"],
-                    cache_dir=str(cache_dir),
-                )
-            )
-            / "config.json"
-        )
-        info = HfApi().model_info(model_id, revision=revision, files_metadata=True)
-    except Exception as error:
-        message = str(error).splitlines()[0] or error.__class__.__name__
-        raise RuntimeError(f"Could not fetch metadata for {model_id!r}: {message}") from error
-    if not config.exists():
-        raise RuntimeError(
-            "The repository has no config.json; it is not a supported Transformers checkpoint."
-        )
-    safetensors = getattr(info, "safetensors", None)
-    exact = getattr(safetensors, "total", None) if safetensors is not None else None
-    return config, int(exact) if exact else None
-
-
 def _write_report(
     destination: Path,
     hardware: Any,
@@ -122,12 +66,14 @@ def _write_report(
     revision: str | None,
     options: tuple[QuantizationOption, ...] = (),
     verification: VerificationResult | None = None,
+    preflight_result: PreflightResult | None = None,
 ) -> Path:
     destination.mkdir(parents=True, exist_ok=True)
     report = destination / "autoquant-report.json"
-    report.write_text(
+    payload = (
         json.dumps(
             {
+                "schema_version": 1,
                 "hardware": hardware.to_dict(),
                 "model": model.to_dict(),
                 "plan": plan.to_dict(),
@@ -135,12 +81,35 @@ def _write_report(
                 "revision": revision,
                 "parameter_count_is_estimated_from_config": not model.parameters_exact,
                 "verification": verification.to_dict() if verification else {"skipped": True},
+                "preflight": preflight_result.to_dict() if preflight_result else None,
             },
             indent=2,
         )
         + "\n"
     )
+    with report.open("w") as stream:
+        stream.write(payload)
+        stream.flush()
+        os.fsync(stream.fileno())
     return report
+
+
+def _write_diagnostic(stage: Path, error: Exception, preflight_result: PreflightResult) -> Path:
+    diagnostic = stage.with_name(f"{stage.name}-diagnostic.json")
+    code = error.code if isinstance(error, AutoQuantError) else "conversion"
+    diagnostic.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "status": "failed",
+                "error": {"code": code, "message": str(error)},
+                "preflight": preflight_result.to_dict(),
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    return diagnostic
 
 
 def _format_params(parameters: int) -> str:
@@ -194,75 +163,175 @@ def _print_summary(
 
 def _run(args: argparse.Namespace) -> int:
     hardware = detect_hardware()
-    config, exact = _fetch_metadata(
-        args.model, args.revision, Path.home() / ".cache" / "mlx-autoquant"
+    hf_home = os.environ.get("HF_HOME")
+    cache_dir = Path(hf_home) / "hub" if hf_home else Path.home() / ".cache" / "huggingface" / "hub"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    preflight_result = preflight(
+        args.model,
+        args.revision,
+        hardware,
+        args.context_length,
+        cache_dir,
+        args.output,
     )
-    model = profile_config(args.model, config, exact)
-    context_length = args.context_length or model.recommended_context_length
+    model = preflight_result.model
+    context_length = preflight_result.context_length
     options = quantization_options(hardware, model, context_length)
     plan = choose_quantization(hardware, model, context_length)
     if args.bits:
+        forced_size = estimated_model_gib(model.parameters, args.bits)
+        if forced_size > plan.available_for_model_gib:
+            raise InsufficientMemoryError(
+                f"{args.bits}-bit weights need {forced_size:.2f} GiB, "
+                f"but only {plan.available_for_model_gib:.2f} GiB is available.",
+                "Choose a smaller bit-width, model, or context length.",
+            )
+        forced_temporary = int(
+            (
+                preflight_result.source_weight_bytes
+                + preflight_result.required_metadata_bytes
+                + forced_size * 1024**3
+            )
+            * 1.15
+        )
+        if forced_temporary > preflight_result.available_disk_bytes:
+            raise InsufficientDiskError(
+                f"{args.bits}-bit conversion needs about {forced_temporary / 1024**3:.2f} GiB "
+                f"of temporary disk space, but only "
+                f"{preflight_result.available_disk_bytes / 1024**3:.2f} GiB is free.",
+                "Free disk space or choose a smaller model.",
+            )
         plan = replace(
             plan,
             bits=args.bits,
-            estimated_model_gib=round(estimated_model_gib(model.parameters, args.bits), 2),
+            estimated_model_gib=round(forced_size, 2),
             rationale="User-selected bit-width; fit has not been overridden by the planner.",
         )
-    if args.json:
-        print(
-            json.dumps(
-                {
-                    "hardware": hardware.to_dict(),
-                    "model": model.to_dict(),
-                    "plan": plan.to_dict(),
-                    "options": [option.to_dict() for option in options],
-                },
-                indent=2,
-            )
-        )
-    else:
-        _print_summary(hardware, model, plan, options)
     if args.dry_run:
+        result = {
+            "hardware": hardware.to_dict(),
+            "model": model.to_dict(),
+            "plan": plan.to_dict(),
+            "options": [option.to_dict() for option in options],
+            "preflight": preflight_result.to_dict(),
+        }
+        if args.json:
+            print(json.dumps(result, indent=2))
+        else:
+            _print_summary(hardware, model, plan, options)
         if not args.json:
             print()
             print("Dry run complete. Re-run without --dry-run to convert the model.")
         return 0
-    if args.output.exists() and any(args.output.iterdir()):
-        raise RuntimeError(f"Output directory is not empty: {args.output}")
+    if not args.json:
+        _print_summary(hardware, model, plan, options)
+    if args.output.exists():
+        raise AutoQuantError(
+            f"Output path already exists: {args.output}",
+            "Choose a new --output path or remove the existing output first.",
+        )
+    if not args.yes:
+        try:
+            answer = input("Proceed with downloading and converting this model? [y/N] ")
+        except EOFError as error:
+            raise AutoQuantError(
+                "Conversion requires confirmation in a non-interactive terminal.",
+                "Pass --yes for scripts and CI.",
+            ) from error
+        if answer.strip().lower() not in {"y", "yes"}:
+            print("Conversion cancelled.")
+            return 0
+    try:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise AutoQuantError(
+            f"Could not create output directory: {args.output.parent}",
+            "Choose an output path you can write to, then retry.",
+        ) from error
+    stage = args.output.parent / f".{args.output.name}.staging-{uuid.uuid4().hex[:8]}"
     try:
         from mlx_lm import convert
     except ImportError as error:
-        raise RuntimeError(
-            "Install dependencies on an Apple-silicon Mac: pip install -e ."
+        raise AutoQuantError(
+            "MLX dependencies are not installed.",
+            "Install with `pip install mlx-autoquant` on an Apple-silicon Mac.",
         ) from error
-    print()
-    print("Downloading model weights...")
-    _download_weights(args.model, args.revision)
-    print()
-    print("Quantizing model...")
-    with _activity_bar("Quantizing model"):
-        convert(
-            args.model,
-            mlx_path=str(args.output),
-            quantize=True,
-            q_group_size=plan.group_size,
-            q_bits=plan.bits,
-            q_mode=plan.mode,
-            revision=args.revision,
-            trust_remote_code=args.trust_remote_code,
+    try:
+        status_stream = sys.stderr if args.json else sys.stdout
+        print("Downloading model weights...", file=status_stream)
+        snapshot = download_snapshot(preflight_result, cache_dir)
+        print("Quantizing model...", file=status_stream)
+        with (
+            _activity_bar("Quantizing model"),
+            redirect_stdout(sys.stderr if args.json else sys.stdout),
+        ):
+            convert(
+                str(snapshot),
+                mlx_path=str(stage),
+                quantize=True,
+                q_group_size=plan.group_size,
+                q_bits=plan.bits,
+                q_mode=plan.mode,
+                revision=None,
+                trust_remote_code=False,
+            )
+        verification = (
+            None if args.no_verify else verify_model(stage, max_tokens=args.verify_tokens)
         )
-    verification = (
-        None if args.no_verify else verify_model(args.output, max_tokens=args.verify_tokens)
-    )
-    report = _write_report(
-        args.output,
-        hardware,
-        model,
-        plan,
-        args.revision,
-        options,
-        verification,
-    )
+        report = _write_report(
+            stage,
+            hardware,
+            model,
+            plan,
+            preflight_result.resolved_revision,
+            options,
+            verification,
+            preflight_result,
+        )
+        stage.replace(args.output)
+        report = args.output / report.name
+    except AutoQuantError as error:
+        diagnostic = _write_diagnostic(stage, error, preflight_result)
+        print(f"Diagnostic report: {diagnostic}", file=sys.stderr)
+        shutil.rmtree(stage, ignore_errors=True)
+        raise
+    except KeyboardInterrupt as error:
+        cancelled = CancellationError(
+            "Conversion cancelled before the model was promoted.",
+            "Retry with the same model and a new output path.",
+        )
+        diagnostic = _write_diagnostic(stage, cancelled, preflight_result)
+        print(f"Diagnostic report: {diagnostic}", file=sys.stderr)
+        shutil.rmtree(stage, ignore_errors=True)
+        raise cancelled from error
+    except Exception as error:
+        converted = ConversionError(
+            f"Conversion failed for {args.model!r}: "
+            f"{str(error).splitlines()[0] or error.__class__.__name__}",
+            f"Inspect the staging directory {stage} and retry with a new --output path.",
+        )
+        diagnostic = _write_diagnostic(stage, converted, preflight_result)
+        print(f"Diagnostic report: {diagnostic}", file=sys.stderr)
+        shutil.rmtree(stage, ignore_errors=True)
+        raise converted from error
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "status": "success",
+                    "hardware": hardware.to_dict(),
+                    "model": model.to_dict(),
+                    "plan": plan.to_dict(),
+                    "options": [option.to_dict() for option in options],
+                    "preflight": preflight_result.to_dict(),
+                    "verification": verification.to_dict() if verification else {"skipped": True},
+                    "output": str(args.output),
+                    "report": str(report),
+                },
+                indent=2,
+            )
+        )
+        return 0
     if verification:
         peak_memory = (
             f"{verification.peak_memory_gib:.2f} GiB"
@@ -273,6 +342,8 @@ def _run(args: argparse.Namespace) -> int:
             f"Verification passed; generated {verification.generated_tokens} tokens, "
             f"peak memory: {peak_memory}."
         )
+    if args.no_verify:
+        print("Warning: output was not verified (--no-verify).")
     print(f"Saved quantized model to {args.output}; report: {report}")
     return 0
 
@@ -291,10 +362,15 @@ def main(argv: list[str] | None = None) -> int:
         help="Expected context length (default: model config, capped at 8192).",
     )
     parser.add_argument(
-        "--bits", type=int, choices=range(2, 9), help="Override the automatic bit-width."
+        "--bits",
+        type=int,
+        choices=range(2, 9),
+        help="Request a bit-width; rejected when it does not fit the detected budget.",
     )
     parser.add_argument(
-        "--dry-run", action="store_true", help="Download only config.json and print the decision."
+        "--dry-run",
+        action="store_true",
+        help="Print the metadata preflight without downloading tensor weights.",
     )
     parser.add_argument(
         "--json", action="store_true", help="Print machine-readable JSON instead of the summary."
@@ -303,12 +379,14 @@ def main(argv: list[str] | None = None) -> int:
         "--no-verify", action="store_true", help="Skip the post-conversion generation smoke test."
     )
     parser.add_argument(
+        "--yes", action="store_true", help="Skip conversion confirmation (for scripts and CI)."
+    )
+    parser.add_argument(
         "--verify-tokens",
         type=int,
         default=8,
         help="Tokens to generate during verification (default: 8).",
     )
-    parser.add_argument("--trust-remote-code", action="store_true")
     args = parser.parse_args(argv)
     if args.context_length is not None and args.context_length <= 0:
         parser.error("--context-length must be positive")
@@ -316,8 +394,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--verify-tokens must be positive")
     try:
         return _run(args)
-    except RuntimeError as error:
-        print(f"error: {error}", file=sys.stderr)
+    except AutoQuantError as error:
+        print(f"error [{error.code}]: {error}", file=sys.stderr)
+        if error.hint:
+            print(f"next: {error.hint}", file=sys.stderr)
         return 1
     except Exception as error:
         message = str(error).splitlines()[0] or error.__class__.__name__

@@ -6,6 +6,17 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Pinned metadata preflight with support checks, disk estimates, and a confirmation boundary before tensor downloads.
+- Transactional conversion reports with verification status and diagnostic reports for failed conversions.
+- Contributor guidance for model fixtures and macOS integration checks.
+
+### Changed
+
+- MLX-LM and Hugging Face Hub dependencies are bounded to tested major/minor ranges.
+- Remote-code conversion is no longer enabled in the first supported workflow.
+
 ## [0.2.0] - 2026-08-13
 
 ### Added
