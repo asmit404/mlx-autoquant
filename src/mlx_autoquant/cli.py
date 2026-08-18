@@ -136,6 +136,7 @@ def _print_summary(
     model: ModelProfile,
     plan: QuantizationPlan,
     options: tuple[QuantizationOption, ...] = (),
+    preflight_result: PreflightResult | None = None,
 ) -> None:
     count_label = (
         f"{_format_params(model.parameters)} (from safetensors metadata)"
@@ -160,6 +161,15 @@ def _print_summary(
         f"  Available:       {plan.available_for_model_gib:.2f} GiB",
         f"  Rationale:       {plan.rationale}",
     ]
+    if preflight_result:
+        lines.extend(
+            [
+                "  Required disk:   "
+                f"{preflight_result.estimated_temporary_bytes / 1024**3:.2f} GiB",
+                f"  Free cache:      {preflight_result.available_cache_bytes / 1024**3:.2f} GiB",
+                f"  Free output:     {preflight_result.available_output_bytes / 1024**3:.2f} GiB",
+            ]
+        )
     if options:
         lines.extend(["", "Options"])
         lines.extend(
@@ -225,6 +235,11 @@ def _run(args: argparse.Namespace) -> int:
             estimated_model_gib=round(forced_size, 2),
             rationale="User-selected bit-width; fit has not been overridden by the planner.",
         )
+        preflight_result = replace(
+            preflight_result,
+            estimated_temporary_bytes=preflight_result.required_cache_bytes + forced_output_bytes,
+            required_output_bytes=forced_output_bytes,
+        )
     if args.dry_run:
         result = {
             "hardware": hardware.to_dict(),
@@ -236,13 +251,13 @@ def _run(args: argparse.Namespace) -> int:
         if args.json:
             print(json.dumps(result, indent=2))
         else:
-            _print_summary(hardware, model, plan, options)
+            _print_summary(hardware, model, plan, options, preflight_result)
         if not args.json:
             print()
             print("Dry run complete. Re-run without --dry-run to convert the model.")
         return 0
     if not args.json:
-        _print_summary(hardware, model, plan, options)
+        _print_summary(hardware, model, plan, options, preflight_result)
     if args.output.exists():
         raise AutoQuantError(
             f"Output path already exists: {args.output}",

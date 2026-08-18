@@ -50,6 +50,7 @@ jobs:
         run: |
           output="$(mktemp -d)/mlx-model"
           mlx-autoquant hf-internal-testing/tiny-random-LlamaForCausalLM \
+            --revision 9fb191250dd56d0ba7ec9785a025ed29c03d5998 \
             --output "$output" --bits 8 --yes
           test -f "$output/autoquant-report.json"
           test -f "$output/model.safetensors"
