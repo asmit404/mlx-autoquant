@@ -209,6 +209,19 @@ def preflight(
             f"Could not profile model metadata for {model_id!r}: {error}",
             "Check that config.json describes a causal text-generation model.",
         ) from error
+    required_dimensions = {
+        "hidden_size": model.hidden_size,
+        "layers": model.layers,
+        "num_key_value_heads": model.num_key_value_heads,
+        "head_dim": model.head_dim,
+        "parameters": model.parameters,
+    }
+    missing_dimensions = [name for name, value in required_dimensions.items() if value <= 0]
+    if missing_dimensions:
+        raise MetadataError(
+            f"Model {model_id!r} is missing positive dimensions: {', '.join(missing_dimensions)}.",
+            "Use a complete causal text-generation config.json.",
+        )
 
     source_weight_bytes, metadata_bytes, unknown_size = _required_file_sizes(info)
     if unknown_size:

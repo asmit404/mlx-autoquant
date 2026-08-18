@@ -150,6 +150,34 @@ class TestPreflight(unittest.TestCase):
                     Path(tmp) / "output",
                 )
 
+    def test_rejects_supported_architecture_with_missing_dimensions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            metadata_dir = Path(tmp) / "metadata"
+            metadata_dir.mkdir()
+            (metadata_dir / "config.json").write_text(
+                json.dumps({"architectures": ["Qwen2ForCausalLM"], "model_type": "qwen2"})
+            )
+            api = mock.Mock()
+            api.model_info.return_value = SimpleNamespace(
+                sha="abc123",
+                siblings=[SimpleNamespace(rfilename="model.safetensors", size=900)],
+            )
+            with (
+                mock.patch(
+                    "mlx_autoquant.preflight._api",
+                    return_value=(api, mock.Mock(return_value=str(metadata_dir))),
+                ),
+                self.assertRaises(MetadataError),
+            ):
+                preflight(
+                    "example/model",
+                    None,
+                    HardwareProfile("Apple M4", 32 * 1024**3, True),
+                    4096,
+                    Path(tmp) / "cache",
+                    Path(tmp) / "output",
+                )
+
     def test_reports_no_fitting_candidate_as_memory_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             metadata_dir = Path(tmp) / "metadata"
