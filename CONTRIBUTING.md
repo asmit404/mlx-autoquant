@@ -24,6 +24,8 @@ make coverage
 
 New model-family support requires lightweight metadata tests plus a pinned small conversion fixture. The fixture must load, convert, generate non-empty output, and write a report. Add the family to the support matrix only after the macOS integration check passes.
 
+Update `docs/support-matrix.md` with the fixture repository and immutable revision when adding or changing support coverage.
+
 The first implementation slice does not execute arbitrary remote code. Do not add a model requiring `trust_remote_code` without a separate security and compatibility review.
 
 ## Pull Requests
