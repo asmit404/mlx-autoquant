@@ -151,7 +151,9 @@ def _compatibility(config_path: Path) -> str:
         "Qwen2MoeForCausalLM",
     }
     supported_types = {"llama", "qwen2", "qwen3", "qwen2_moe"}
-    if architectures & supported or model_type in supported_types:
+    if architectures:
+        return "supported" if architectures & supported else "unsupported"
+    if model_type in supported_types:
         return "supported"
     if not architectures and not model_type:
         return "needs_review"
@@ -234,13 +236,22 @@ def preflight(
         0, metadata_bytes - cached_metadata_bytes
     )
     temporary_bytes = required_cache_bytes + output_bytes
-    cache_free = shutil.disk_usage(cache_dir).free
+    cache_root = cache_dir
+    while not cache_root.exists() and cache_root != cache_root.parent:
+        cache_root = cache_root.parent
+    cache_free = shutil.disk_usage(cache_root).free
     output_parent = output.parent
     while not output_parent.exists() and output_parent != output_parent.parent:
         output_parent = output_parent.parent
     output_free = shutil.disk_usage(output_parent).free
+    same_filesystem = cache_root.stat().st_dev == output_parent.stat().st_dev
     available = min(cache_free, output_free)
-    if required_cache_bytes > cache_free or output_bytes > output_free:
+    insufficient_space = (
+        required_cache_bytes + output_bytes > cache_free
+        if same_filesystem
+        else required_cache_bytes > cache_free or output_bytes > output_free
+    )
+    if insufficient_space:
         raise InsufficientDiskError(
             f"Conversion needs {required_cache_bytes / 1024**3:.2f} GiB in the cache "
             f"and {output_bytes / 1024**3:.2f} GiB in the output filesystem; "

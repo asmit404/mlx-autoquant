@@ -112,6 +112,16 @@ def _write_diagnostic(stage: Path, error: Exception, preflight_result: Preflight
     return diagnostic
 
 
+def _cleanup_failed_stage(stage: Path, error: Exception, preflight_result: PreflightResult) -> None:
+    try:
+        diagnostic = _write_diagnostic(stage, error, preflight_result)
+        print(f"Diagnostic report: {diagnostic}", file=sys.stderr)
+    except OSError as diagnostic_error:
+        print(f"Could not write diagnostic report: {diagnostic_error}", file=sys.stderr)
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+
+
 def _format_params(parameters: int) -> str:
     for unit, threshold in (("T", 10**12), ("B", 10**9), ("M", 10**6), ("K", 10**3)):
         if parameters >= threshold:
@@ -287,18 +297,14 @@ def _run(args: argparse.Namespace) -> int:
         stage.replace(args.output)
         report = args.output / report.name
     except AutoQuantError as error:
-        diagnostic = _write_diagnostic(stage, error, preflight_result)
-        print(f"Diagnostic report: {diagnostic}", file=sys.stderr)
-        shutil.rmtree(stage, ignore_errors=True)
+        _cleanup_failed_stage(stage, error, preflight_result)
         raise
     except KeyboardInterrupt as error:
         cancelled = CancellationError(
             "Conversion cancelled before the model was promoted.",
             "Retry with the same model and a new output path.",
         )
-        diagnostic = _write_diagnostic(stage, cancelled, preflight_result)
-        print(f"Diagnostic report: {diagnostic}", file=sys.stderr)
-        shutil.rmtree(stage, ignore_errors=True)
+        _cleanup_failed_stage(stage, cancelled, preflight_result)
         raise cancelled from error
     except Exception as error:
         converted = ConversionError(
@@ -306,9 +312,7 @@ def _run(args: argparse.Namespace) -> int:
             f"{str(error).splitlines()[0] or error.__class__.__name__}",
             f"Inspect the staging directory {stage} and retry with a new --output path.",
         )
-        diagnostic = _write_diagnostic(stage, converted, preflight_result)
-        print(f"Diagnostic report: {diagnostic}", file=sys.stderr)
-        shutil.rmtree(stage, ignore_errors=True)
+        _cleanup_failed_stage(stage, converted, preflight_result)
         raise converted from error
     if args.json:
         print(
