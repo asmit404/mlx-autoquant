@@ -1,4 +1,5 @@
 import contextlib
+import inspect
 import io
 import json
 import tempfile
@@ -56,6 +57,13 @@ def patch_metadata(params: int = 7_000_000_000, exact: bool = True):
 
 
 class TestCli(unittest.TestCase):
+    def test_mlx_lm_converter_contract(self) -> None:
+        from mlx_lm import convert
+
+        parameters = inspect.signature(convert).parameters
+        self.assertTrue({"hf_path", "mlx_path", "revision"}.issubset(parameters))
+        self.assertTrue({"q_group_size", "q_bits", "q_mode"}.issubset(parameters))
+
     def test_json_dry_run(self) -> None:
         tmp, patched = patch_metadata()
         with patched, mock.patch("mlx_autoquant.cli.detect_hardware", return_value=HW):

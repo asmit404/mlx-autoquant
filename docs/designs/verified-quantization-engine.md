@@ -149,7 +149,7 @@ Run the current package against one real beginner scenario, such as a Qwen3 27B 
 ## Reviewer Concerns
 
 - The exact pinned small Qwen fixture and the installed `mlx-lm` revision still need to be selected during implementation and validated on macOS.
-- The revision adapter must be checked against the actual installed `mlx_lm.convert` signature before implementation claims direct revision support.
+- The revision adapter is covered by `tests/test_cli.py::TestCli::test_mlx_lm_converter_contract`; the real Qwen3 27B run remains blocked by Hugging Face access and is tracked in `docs/validation/qwen3-27b-tthw.md`.
 
 ## Engineering Review Outputs
 
