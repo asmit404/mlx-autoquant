@@ -212,6 +212,7 @@ def preflight(
     required_dimensions = {
         "hidden_size": model.hidden_size,
         "layers": model.layers,
+        "num_attention_heads": model.num_attention_heads,
         "num_key_value_heads": model.num_key_value_heads,
         "head_dim": model.head_dim,
         "parameters": model.parameters,

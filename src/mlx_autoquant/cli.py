@@ -197,9 +197,21 @@ def _run(args: argparse.Namespace) -> int:
                 "Choose a smaller bit-width, model, or context length.",
             )
         forced_output_bytes = int(forced_size * 1024**3)
+        cache_root = cache_dir
+        while not cache_root.exists() and cache_root != cache_root.parent:
+            cache_root = cache_root.parent
+        output_root = args.output.parent
+        while not output_root.exists() and output_root != output_root.parent:
+            output_root = output_root.parent
+        same_filesystem = cache_root.stat().st_dev == output_root.stat().st_dev
         if (
-            preflight_result.required_cache_bytes > preflight_result.available_cache_bytes
-            or forced_output_bytes > preflight_result.available_output_bytes
+            preflight_result.required_cache_bytes + forced_output_bytes
+            > preflight_result.available_cache_bytes
+            if same_filesystem
+            else (
+                preflight_result.required_cache_bytes > preflight_result.available_cache_bytes
+                or forced_output_bytes > preflight_result.available_output_bytes
+            )
         ):
             raise InsufficientDiskError(
                 f"{args.bits}-bit conversion needs "
