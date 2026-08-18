@@ -51,6 +51,10 @@ def patch_metadata(params: int = 7_000_000_000, exact: bool = True):
         100,
         100 * 1024**3,
         1_000_000_000,
+        100 * 1024**3,
+        100 * 1024**3,
+        1_000_000_000,
+        1_000_000_000,
         "supported",
     )
     return tmp, mock.patch("mlx_autoquant.cli.preflight", return_value=result)

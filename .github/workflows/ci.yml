@@ -50,7 +50,7 @@ jobs:
         run: |
           output="$(mktemp -d)/mlx-model"
           mlx-autoquant hf-internal-testing/tiny-random-LlamaForCausalLM \
-            --output "$output" --bits 8
+            --output "$output" --bits 8 --yes
           test -f "$output/autoquant-report.json"
           test -f "$output/model.safetensors"
       - name: Convert and verify small Qwen model

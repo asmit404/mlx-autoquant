@@ -43,6 +43,10 @@ class PreflightResult:
     required_metadata_bytes: int
     available_disk_bytes: int
     estimated_temporary_bytes: int
+    available_cache_bytes: int
+    available_output_bytes: int
+    required_cache_bytes: int
+    required_output_bytes: int
     compatibility: str
     warnings: tuple[str, ...] = ()
 
@@ -126,6 +130,14 @@ def _exact_parameters(info: Any) -> int | None:
     safetensors = getattr(info, "safetensors", None)
     total = getattr(safetensors, "total", None) if safetensors is not None else None
     return int(total) if total else None
+
+
+def _cached_size(root: Path, suffixes: tuple[str, ...]) -> int:
+    return sum(
+        path.stat().st_size
+        for path in root.rglob("*")
+        if path.is_file() and path.name.endswith(suffixes)
+    )
 
 
 def _compatibility(config_path: Path) -> str:
@@ -216,17 +228,24 @@ def preflight(
             "Choose a smaller model or context length.",
         )
     output_bytes = int(estimated_model_gib(model.parameters, selected.bits) * 1024**3)
-    temporary_bytes = int((source_weight_bytes + output_bytes + metadata_bytes) * 1.15)
+    cached_weight_bytes = _cached_size(metadata_dir, (".safetensors", ".bin", ".pt", ".pth"))
+    cached_metadata_bytes = _cached_size(metadata_dir, (".json",))
+    required_cache_bytes = max(0, source_weight_bytes - cached_weight_bytes) + max(
+        0, metadata_bytes - cached_metadata_bytes
+    )
+    temporary_bytes = required_cache_bytes + output_bytes
     cache_free = shutil.disk_usage(cache_dir).free
     output_parent = output.parent
     while not output_parent.exists() and output_parent != output_parent.parent:
         output_parent = output_parent.parent
     output_free = shutil.disk_usage(output_parent).free
     available = min(cache_free, output_free)
-    if temporary_bytes > available:
+    if required_cache_bytes > cache_free or output_bytes > output_free:
         raise InsufficientDiskError(
-            f"Conversion needs about {temporary_bytes / 1024**3:.2f} GiB, "
-            f"but only {available / 1024**3:.2f} GiB is free.",
+            f"Conversion needs {required_cache_bytes / 1024**3:.2f} GiB in the cache "
+            f"and {output_bytes / 1024**3:.2f} GiB in the output filesystem; "
+            f"free space is {cache_free / 1024**3:.2f} GiB and "
+            f"{output_free / 1024**3:.2f} GiB.",
             "Free disk space or choose a smaller model/context.",
         )
     return PreflightResult(
@@ -240,6 +259,10 @@ def preflight(
         metadata_bytes,
         available,
         temporary_bytes,
+        cache_free,
+        output_free,
+        required_cache_bytes,
+        output_bytes,
         compatibility,
     )
 

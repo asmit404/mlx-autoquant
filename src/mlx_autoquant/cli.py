@@ -186,19 +186,15 @@ def _run(args: argparse.Namespace) -> int:
                 f"but only {plan.available_for_model_gib:.2f} GiB is available.",
                 "Choose a smaller bit-width, model, or context length.",
             )
-        forced_temporary = int(
-            (
-                preflight_result.source_weight_bytes
-                + preflight_result.required_metadata_bytes
-                + forced_size * 1024**3
-            )
-            * 1.15
-        )
-        if forced_temporary > preflight_result.available_disk_bytes:
+        forced_output_bytes = int(forced_size * 1024**3)
+        if (
+            preflight_result.required_cache_bytes > preflight_result.available_cache_bytes
+            or forced_output_bytes > preflight_result.available_output_bytes
+        ):
             raise InsufficientDiskError(
-                f"{args.bits}-bit conversion needs about {forced_temporary / 1024**3:.2f} GiB "
-                f"of temporary disk space, but only "
-                f"{preflight_result.available_disk_bytes / 1024**3:.2f} GiB is free.",
+                f"{args.bits}-bit conversion needs "
+                f"{preflight_result.required_cache_bytes / 1024**3:.2f} GiB in the cache "
+                f"and {forced_output_bytes / 1024**3:.2f} GiB in the output filesystem.",
                 "Free disk space or choose a smaller model.",
             )
         plan = replace(
