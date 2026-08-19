@@ -8,11 +8,12 @@ from pathlib import Path
 from unittest import mock
 
 from mlx_autoquant import cli
-from mlx_autoquant.errors import MetadataError
+from mlx_autoquant.errors import MetadataError, VerificationError
 from mlx_autoquant.hardware import HardwareProfile
 from mlx_autoquant.model import ModelProfile, profile_config
 from mlx_autoquant.planner import choose_quantization
 from mlx_autoquant.preflight import PreflightResult
+from mlx_autoquant.verify import VerificationResult
 
 HW = HardwareProfile("Apple M4", 34_359_738_368, True)
 
@@ -61,6 +62,97 @@ def patch_metadata(params: int = 7_000_000_000, exact: bool = True):
 
 
 class TestCli(unittest.TestCase):
+    def test_confirmation_cancellation_does_not_download(self) -> None:
+        tmp, patched = patch_metadata()
+        with (
+            patched,
+            mock.patch("mlx_autoquant.cli.detect_hardware", return_value=HW),
+            mock.patch("builtins.input", return_value="n"),
+            mock.patch("mlx_autoquant.cli.download_snapshot") as download,
+        ):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = cli.main(["example/model", "--output", str(Path(tmp.name) / "model")])
+        tmp.cleanup()
+        self.assertEqual(rc, 0)
+        self.assertIn("Conversion cancelled.", out.getvalue())
+        download.assert_not_called()
+
+    def test_confirmation_eof_is_a_clean_error(self) -> None:
+        tmp, patched = patch_metadata()
+        with (
+            patched,
+            mock.patch("mlx_autoquant.cli.detect_hardware", return_value=HW),
+            mock.patch("builtins.input", side_effect=EOFError),
+        ):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                rc = cli.main(["example/model", "--output", str(Path(tmp.name) / "model")])
+        tmp.cleanup()
+        self.assertEqual(rc, 1)
+        self.assertIn("requires confirmation", err.getvalue())
+
+    def test_argparse_rejects_invalid_boundaries(self) -> None:
+        with self.assertRaises(SystemExit) as context:
+            cli.main(["example/model", "--context-length", "0"])
+        self.assertEqual(context.exception.code, 2)
+        with self.assertRaises(SystemExit) as context:
+            cli.main(["example/model", "--verify-tokens", "0"])
+        self.assertEqual(context.exception.code, 2)
+        with self.assertRaises(SystemExit) as context:
+            cli.main(["example/model", "--bits", "9"])
+        self.assertEqual(context.exception.code, 2)
+
+    def test_successfully_promotes_verified_stage(self) -> None:
+        tmp, patched = patch_metadata()
+        output = Path(tmp.name) / "model"
+        snapshot = Path(tmp.name) / "snapshot"
+        snapshot.mkdir()
+        verification = VerificationResult("prompt", "answer", 2, 1.25)
+        with (
+            patched,
+            mock.patch("mlx_autoquant.cli.detect_hardware", return_value=HW),
+            mock.patch("mlx_autoquant.cli.download_snapshot", return_value=snapshot),
+            mock.patch("mlx_lm.convert"),
+            mock.patch("mlx_autoquant.cli._activity_bar", return_value=contextlib.nullcontext()),
+            mock.patch("mlx_autoquant.cli.verify_model", return_value=verification),
+        ):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = cli.main(["example/model", "--output", str(output), "--yes"])
+        self.assertEqual(rc, 0)
+        self.assertTrue(output.is_dir())
+        report = json.loads((output / "autoquant-report.json").read_text())
+        self.assertEqual(report["verification"]["generated_tokens"], 2)
+        self.assertIn("Verification passed", out.getvalue())
+        tmp.cleanup()
+
+    def test_verification_error_writes_diagnostic_and_does_not_promote(self) -> None:
+        tmp, patched = patch_metadata()
+        output = Path(tmp.name) / "model"
+        snapshot = Path(tmp.name) / "snapshot"
+        snapshot.mkdir()
+        with (
+            patched,
+            mock.patch("mlx_autoquant.cli.detect_hardware", return_value=HW),
+            mock.patch("mlx_autoquant.cli.download_snapshot", return_value=snapshot),
+            mock.patch("mlx_lm.convert"),
+            mock.patch("mlx_autoquant.cli._activity_bar", return_value=contextlib.nullcontext()),
+            mock.patch(
+                "mlx_autoquant.cli.verify_model",
+                side_effect=VerificationError("empty response"),
+            ),
+        ):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                rc = cli.main(["example/model", "--output", str(output), "--yes"])
+        self.assertEqual(rc, 1)
+        self.assertFalse(output.exists())
+        diagnostics = list(Path(tmp.name).glob(".model.staging-*-diagnostic.json"))
+        self.assertEqual(len(diagnostics), 1)
+        self.assertIn("verification", diagnostics[0].read_text())
+        tmp.cleanup()
+
     def test_mlx_lm_converter_contract(self) -> None:
         from mlx_lm import convert
 
