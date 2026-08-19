@@ -143,6 +143,8 @@ def _cached_size(root: Path, suffixes: tuple[str, ...]) -> int:
 
 def _compatibility(config_path: Path) -> str:
     config = json.loads(config_path.read_text())
+    if not isinstance(config, dict):
+        raise ValueError("config.json must contain a JSON object")
     architectures = set(config.get("architectures", ()))
     model_type = config.get("model_type")
     supported = {
@@ -202,7 +204,9 @@ def preflight(
             "Use a tested Llama or Qwen causal checkpoint, or add a support fixture.",
         )
     config = json.loads(config_path.read_text())
-    if not any(key in config for key in ("num_attention_heads", "num_heads", "n_head")):
+    attention_keys = ("num_attention_heads", "num_heads", "n_head")
+    attention_heads = next((config[key] for key in attention_keys if key in config), None)
+    if not isinstance(attention_heads, int) or attention_heads <= 0:
         raise MetadataError(
             f"Model {model_id!r} is missing attention head metadata.",
             "Use a complete causal text-generation config.json.",

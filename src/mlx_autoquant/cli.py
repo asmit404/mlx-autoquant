@@ -297,6 +297,9 @@ def _run(args: argparse.Namespace) -> int:
                 "Conversion requires confirmation in a non-interactive terminal.",
                 "Pass --yes for scripts and CI.",
             ) from error
+        except KeyboardInterrupt:
+            _release_output_lock(output_lock)
+            raise
         if answer.strip().lower() not in {"y", "yes"}:
             _release_output_lock(output_lock)
             print("Conversion cancelled.")

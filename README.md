@@ -93,7 +93,7 @@ During a real conversion you get two progress indicators: an aggregate bar while
 - Supports tested causal text-generation Transformers checkpoints with `config.json`; arbitrary remote code is not supported in the first release.
 - A 15% conversion/sharding allowance and a 25% (minimum 4 GiB) system reserve make the automatic choice conservative.
 - The user can request `--bits`, but a forced value is rejected if it does not fit the same budget.
-- Without safetensors weights, parameter counts are estimates; the report and summary mark them as estimated.
+- When Hub safetensors metadata does not include an exact parameter total, the report and summary mark the config-based estimate.
 
 ## Development
 
