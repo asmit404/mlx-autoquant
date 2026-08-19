@@ -81,7 +81,7 @@ mlx-autoquant Qwen/Qwen2.5-7B-Instruct --dry-run --json
 Conversions run an 8-token generation smoke test after quantization. Use
 `--verify-tokens 16` to generate more tokens. `--no-verify` is an expert escape hatch: the output is explicitly marked unverified in the report and terminal output.
 
-Each completed conversion writes `autoquant-report.json` next to the MLX model. It records the detected machine, the model dimensions, the selected bits, and the memory assumptions. Parameter counts come from Hugging Face's safetensors metadata; when a repository has no safetensors weights, the tool falls back to an estimate from `config.json` and labels it as such.
+Each completed conversion writes `autoquant-report.json` next to the MLX model. It records the detected machine, the model dimensions, the selected bits, and the memory assumptions. Parameter counts come from Hugging Face's safetensors metadata; when that exact count is unavailable, the tool falls back to an estimate from `config.json` and labels it as such. Checkpoints must provide safetensors weights.
 
 Errors are printed to stderr with a non-zero exit code instead of a traceback. Expected errors include a category, cause, next action, and diagnostic report when conversion has started. Downloads use one Hugging Face cache root; set `HF_HOME` to move it, and set `HF_TOKEN` to authenticate private or gated models.
 

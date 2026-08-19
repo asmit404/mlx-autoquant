@@ -201,6 +201,12 @@ def preflight(
             f"Model {model_id!r} is not supported before conversion ({compatibility}).",
             "Use a tested Llama or Qwen causal checkpoint, or add a support fixture.",
         )
+    config = json.loads(config_path.read_text())
+    if not any(key in config for key in ("num_attention_heads", "num_heads", "n_head")):
+        raise MetadataError(
+            f"Model {model_id!r} is missing attention head metadata.",
+            "Use a complete causal text-generation config.json.",
+        )
     try:
         model = profile_config(model_id, config_path, _exact_parameters(info))
     except (KeyError, TypeError, ValueError, ZeroDivisionError) as error:

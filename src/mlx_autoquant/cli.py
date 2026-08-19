@@ -122,6 +122,22 @@ def _cleanup_failed_stage(stage: Path, error: Exception, preflight_result: Prefl
         shutil.rmtree(stage, ignore_errors=True)
 
 
+def _acquire_output_lock(output: Path) -> Path:
+    lock = output.parent / f".{output.name}.lock"
+    try:
+        lock.mkdir()
+    except FileExistsError as error:
+        raise AutoQuantError(
+            f"Another conversion is already using the output path: {output}",
+            "Wait for the other conversion to finish, then retry.",
+        ) from error
+    return lock
+
+
+def _release_output_lock(lock: Path) -> None:
+    lock.rmdir()
+
+
 def _format_params(parameters: int) -> str:
     for unit, threshold in (("T", 10**12), ("B", 10**9), ("M", 10**6), ("K", 10**3)):
         if parameters >= threshold:
@@ -258,7 +274,16 @@ def _run(args: argparse.Namespace) -> int:
         return 0
     if not args.json:
         _print_summary(hardware, model, plan, options, preflight_result)
+    try:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise AutoQuantError(
+            f"Could not create output directory: {args.output.parent}",
+            "Choose an output path you can write to, then retry.",
+        ) from error
+    output_lock = _acquire_output_lock(args.output)
     if args.output.exists():
+        _release_output_lock(output_lock)
         raise AutoQuantError(
             f"Output path already exists: {args.output}",
             "Choose a new --output path or remove the existing output first.",
@@ -267,24 +292,20 @@ def _run(args: argparse.Namespace) -> int:
         try:
             answer = input("Proceed with downloading and converting this model? [y/N] ")
         except EOFError as error:
+            _release_output_lock(output_lock)
             raise AutoQuantError(
                 "Conversion requires confirmation in a non-interactive terminal.",
                 "Pass --yes for scripts and CI.",
             ) from error
         if answer.strip().lower() not in {"y", "yes"}:
+            _release_output_lock(output_lock)
             print("Conversion cancelled.")
             return 0
-    try:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-    except OSError as error:
-        raise AutoQuantError(
-            f"Could not create output directory: {args.output.parent}",
-            "Choose an output path you can write to, then retry.",
-        ) from error
     stage = args.output.parent / f".{args.output.name}.staging-{uuid.uuid4().hex[:8]}"
     try:
         from mlx_lm import convert
     except ImportError as error:
+        _release_output_lock(output_lock)
         raise AutoQuantError(
             "MLX dependencies are not installed.",
             "Install with `pip install mlx-autoquant` on an Apple-silicon Mac.",
@@ -341,6 +362,8 @@ def _run(args: argparse.Namespace) -> int:
         )
         _cleanup_failed_stage(stage, converted, preflight_result)
         raise converted from error
+    finally:
+        _release_output_lock(output_lock)
     if args.json:
         print(
             json.dumps(
