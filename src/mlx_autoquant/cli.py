@@ -313,6 +313,9 @@ def _run(args: argparse.Namespace) -> int:
             "MLX dependencies are not installed.",
             "Install with `pip install mlx-autoquant` on an Apple-silicon Mac.",
         ) from error
+    except KeyboardInterrupt:
+        _release_output_lock(output_lock)
+        raise
     try:
         status_stream = sys.stderr if args.json else sys.stdout
         print("Downloading model weights...", file=status_stream)

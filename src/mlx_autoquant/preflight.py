@@ -206,7 +206,11 @@ def preflight(
     config = json.loads(config_path.read_text())
     attention_keys = ("num_attention_heads", "num_heads", "n_head")
     attention_heads = next((config[key] for key in attention_keys if key in config), None)
-    if not isinstance(attention_heads, int) or attention_heads <= 0:
+    if (
+        isinstance(attention_heads, bool)
+        or not isinstance(attention_heads, int)
+        or attention_heads <= 0
+    ):
         raise MetadataError(
             f"Model {model_id!r} is missing attention head metadata.",
             "Use a complete causal text-generation config.json.",

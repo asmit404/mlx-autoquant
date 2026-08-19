@@ -79,7 +79,7 @@ mlx-autoquant Qwen/Qwen2.5-7B-Instruct --dry-run --json
 ```
 
 Conversions run an 8-token generation smoke test after quantization. Use
-`--verify-tokens 16` to generate more tokens. `--no-verify` is an expert escape hatch: the output is explicitly marked unverified in the report and terminal output.
+`--verify-tokens 16` to generate more tokens. `--no-verify` is an expert escape hatch: the report marks verification as skipped and the terminal warns that the output was not verified.
 
 Each completed conversion writes `autoquant-report.json` next to the MLX model. It records the detected machine, the model dimensions, the selected bits, and the memory assumptions. Parameter counts come from Hugging Face's safetensors metadata; when that exact count is unavailable, the tool falls back to an estimate from `config.json` and labels it as such. Checkpoints must provide safetensors weights.
 
