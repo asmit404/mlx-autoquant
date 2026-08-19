@@ -46,7 +46,8 @@ ignore_missing_imports = true
 warn_unused_configs = true
 warn_redundant_casts = true
 warn_unused_ignores = true
+follow_imports = "skip"
 
 [[tool.mypy.overrides]]
-module = ["mlx_lm.*", "huggingface_hub.*"]
+module = ["mlx.*", "mlx_lm.*", "huggingface_hub.*"]
 follow_imports = "skip"
