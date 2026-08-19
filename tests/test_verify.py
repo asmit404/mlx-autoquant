@@ -4,10 +4,33 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from mlx_autoquant.errors import VerificationError
 from mlx_autoquant.verify import verify_model
 
 
 class TestVerifyModel(unittest.TestCase):
+    def test_rejects_nonpositive_token_count(self) -> None:
+        with self.assertRaisesRegex(VerificationError, "must be positive"):
+            verify_model(Path("/tmp/model"), max_tokens=0)
+
+    def test_uses_core_memory_api_when_available(self) -> None:
+        fake_core = types.ModuleType("mlx.core")
+        fake_core.reset_peak_memory = mock.Mock()
+        fake_core.get_peak_memory = mock.Mock(return_value=0)
+        fake_mlx = types.ModuleType("mlx")
+        fake_mlx.core = fake_core
+        tokenizer = mock.Mock()
+        tokenizer.encode.return_value = [1]
+        fake_lm = types.ModuleType("mlx_lm")
+        fake_lm.load = mock.Mock(return_value=(object(), tokenizer))
+        fake_lm.generate = mock.Mock(return_value="answer")
+        with mock.patch.dict(
+            sys.modules, {"mlx": fake_mlx, "mlx.core": fake_core, "mlx_lm": fake_lm}
+        ):
+            result = verify_model(Path("/tmp/model"))
+        self.assertIsNone(result.peak_memory_gib)
+        fake_core.reset_peak_memory.assert_called_once_with()
+
     def test_loads_generates_and_reports_peak_memory(self) -> None:
         fake_metal = types.SimpleNamespace(
             reset_peak_memory=mock.Mock(), get_peak_memory=mock.Mock(return_value=2 * 1024**3)
