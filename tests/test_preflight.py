@@ -5,9 +5,16 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from mlx_autoquant.errors import InsufficientMemoryError, MetadataError, UnsupportedModelError
+from mlx_autoquant.errors import (
+    AuthenticationError,
+    InsufficientDiskError,
+    InsufficientMemoryError,
+    MetadataError,
+    NetworkError,
+    UnsupportedModelError,
+)
 from mlx_autoquant.hardware import HardwareProfile
-from mlx_autoquant.preflight import download_snapshot, preflight
+from mlx_autoquant.preflight import _classify_hub_error, download_snapshot, preflight
 
 CONFIG = {
     "architectures": ["Qwen2ForCausalLM"],
@@ -24,6 +31,66 @@ CONFIG = {
 
 
 class TestPreflight(unittest.TestCase):
+    def test_classifies_hugging_face_errors(self) -> None:
+        cases = (
+            (RuntimeError("RepositoryNotFoundError: not found"), MetadataError),
+            (RuntimeError("403 gated repository"), AuthenticationError),
+            (RuntimeError("connection timeout"), NetworkError),
+            (RuntimeError("unexpected response"), MetadataError),
+        )
+        for error, expected in cases:
+            with self.subTest(error=error):
+                self.assertIsInstance(_classify_hub_error(error, "example/model"), expected)
+
+    def test_rejects_missing_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            metadata_dir = Path(tmp) / "metadata"
+            metadata_dir.mkdir()
+            api = mock.Mock()
+            api.model_info.return_value = SimpleNamespace(sha="abc123", siblings=[])
+            with (
+                mock.patch(
+                    "mlx_autoquant.preflight._api",
+                    return_value=(api, mock.Mock(return_value=str(metadata_dir))),
+                ),
+                self.assertRaisesRegex(MetadataError, "has no config.json"),
+            ):
+                preflight(
+                    "example/model",
+                    None,
+                    HardwareProfile("Apple M4", 32 * 1024**3, True),
+                    4096,
+                    Path(tmp) / "cache",
+                    Path(tmp) / "output",
+                )
+
+    def test_rejects_config_without_model_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            metadata_dir = Path(tmp) / "metadata"
+            metadata_dir.mkdir()
+            (metadata_dir / "config.json").write_text(
+                json.dumps({"architectures": ["Qwen2ForCausalLM"], "model_type": "qwen2"})
+            )
+            api = mock.Mock()
+            api.model_info.return_value = SimpleNamespace(
+                sha="abc123", siblings=[SimpleNamespace(rfilename="model.safetensors", size=900)]
+            )
+            with (
+                mock.patch(
+                    "mlx_autoquant.preflight._api",
+                    return_value=(api, mock.Mock(return_value=str(metadata_dir))),
+                ),
+                self.assertRaisesRegex(MetadataError, "missing positive dimensions"),
+            ):
+                preflight(
+                    "example/model",
+                    None,
+                    HardwareProfile("Apple M4", 32 * 1024**3, True),
+                    4096,
+                    Path(tmp) / "cache",
+                    Path(tmp) / "output",
+                )
+
     def test_resolves_revision_and_fetches_metadata_without_weights(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             metadata_dir = Path(tmp) / "metadata"
@@ -237,7 +304,7 @@ class TestPreflight(unittest.TestCase):
                     Path(tmp) / "output",
                 )
 
-    def test_accepts_config_estimate_for_bin_weights(self) -> None:
+    def test_rejects_non_safetensors_weights(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             metadata_dir = Path(tmp) / "metadata"
             metadata_dir.mkdir()
@@ -253,12 +320,9 @@ class TestPreflight(unittest.TestCase):
                     "mlx_autoquant.preflight._api",
                     return_value=(api, mock.Mock(return_value=str(metadata_dir))),
                 ),
-                mock.patch(
-                    "mlx_autoquant.preflight.shutil.disk_usage",
-                    return_value=SimpleNamespace(free=100 * 1024**3),
-                ),
+                self.assertRaisesRegex(MetadataError, "no sized model weight files"),
             ):
-                result = preflight(
+                preflight(
                     "example/model",
                     None,
                     HardwareProfile("Apple M4", 32 * 1024**3, True),
@@ -266,8 +330,83 @@ class TestPreflight(unittest.TestCase):
                     Path(tmp) / "cache",
                     Path(tmp) / "output",
                 )
-        self.assertEqual(result.source_weight_bytes, 900)
-        self.assertFalse(result.model.parameters_exact)
+
+    def test_rejects_insufficient_space_on_shared_filesystem(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            metadata_dir = root / "metadata"
+            metadata_dir.mkdir()
+            (metadata_dir / "config.json").write_text(json.dumps(CONFIG))
+            api = mock.Mock()
+            api.model_info.return_value = SimpleNamespace(
+                sha="abc123", siblings=[SimpleNamespace(rfilename="model.safetensors", size=900)]
+            )
+            with (
+                mock.patch(
+                    "mlx_autoquant.preflight._api",
+                    return_value=(api, mock.Mock(return_value=str(metadata_dir))),
+                ),
+                mock.patch(
+                    "mlx_autoquant.preflight.shutil.disk_usage",
+                    return_value=SimpleNamespace(free=1),
+                ),
+                self.assertRaises(InsufficientDiskError),
+            ):
+                preflight(
+                    "example/model",
+                    None,
+                    HardwareProfile("Apple M4", 32 * 1024**3, True),
+                    4096,
+                    root / "cache",
+                    root / "output",
+                )
+
+    def test_checks_cache_and_output_separately_on_different_filesystems(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cache_dir, output = root / "cache", root / "output"
+            cache_dir.mkdir()
+            output.mkdir()
+            metadata_dir = root / "metadata"
+            metadata_dir.mkdir()
+            (metadata_dir / "config.json").write_text(json.dumps(CONFIG))
+            api = mock.Mock()
+            api.model_info.return_value = SimpleNamespace(
+                sha="abc123", siblings=[SimpleNamespace(rfilename="model.safetensors", size=900)]
+            )
+            original_stat = Path.stat
+
+            def stat(path: Path, *args: object, **kwargs: object) -> object:
+                result = original_stat(path, *args, **kwargs)
+                if path == cache_dir:
+                    return SimpleNamespace(st_dev=1)
+                if path == output:
+                    return SimpleNamespace(st_dev=2)
+                return result
+
+            with (
+                mock.patch(
+                    "mlx_autoquant.preflight._api",
+                    return_value=(api, mock.Mock(return_value=str(metadata_dir))),
+                ),
+                mock.patch(
+                    "mlx_autoquant.preflight.shutil.disk_usage",
+                    side_effect=(
+                        SimpleNamespace(free=10**12),
+                        SimpleNamespace(free=1),
+                    ),
+                ),
+                mock.patch.object(Path, "stat", new=stat),
+                self.assertRaises(InsufficientDiskError),
+            ):
+                preflight(
+                    "example/model",
+                    None,
+                    HardwareProfile("Apple M4", 32 * 1024**3, True),
+                    4096,
+                    cache_dir,
+                    output,
+                )
 
     def test_download_uses_resolved_revision_and_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

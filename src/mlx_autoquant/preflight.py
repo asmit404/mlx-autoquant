@@ -29,6 +29,7 @@ METADATA_PATTERNS = (
     "tokenizer_config.json",
     "*.index.json",
 )
+WEIGHT_SUFFIXES = (".safetensors",)
 
 
 @dataclass(frozen=True)
@@ -110,7 +111,7 @@ def _required_file_sizes(info: Any) -> tuple[int, int, bool]:
             continue
         required = (
             name.endswith(".index.json")
-            or name.endswith((".safetensors", ".bin", ".pt", ".pth"))
+            or name.endswith(WEIGHT_SUFFIXES)
             or name in METADATA_PATTERNS
             or (name.endswith(".json") and "tokenizer" in name)
         )
@@ -119,7 +120,7 @@ def _required_file_sizes(info: Any) -> tuple[int, int, bool]:
             continue
         if name.endswith(".index.json"):
             metadata_bytes += int(size)
-        elif name.endswith((".safetensors", ".bin", ".pt", ".pth")):
+        elif name.endswith(WEIGHT_SUFFIXES):
             weight_bytes += int(size)
         elif name in METADATA_PATTERNS or (name.endswith(".json") and "tokenizer" in name):
             metadata_bytes += int(size)
@@ -147,10 +148,8 @@ def _compatibility(config_path: Path) -> str:
     supported = {
         "LlamaForCausalLM",
         "Qwen2ForCausalLM",
-        "Qwen3ForCausalLM",
-        "Qwen2MoeForCausalLM",
     }
-    supported_types = {"llama", "qwen2", "qwen3", "qwen2_moe"}
+    supported_types = {"llama", "qwen2"}
     if architectures:
         return "supported" if architectures & supported else "unsupported"
     if model_type in supported_types:
@@ -177,7 +176,7 @@ def preflight(
                 repo_id=model_id,
                 revision=resolved_revision,
                 allow_patterns=list(METADATA_PATTERNS),
-                ignore_patterns=["*.safetensors", "*.bin", "*.pth", "*.pt"],
+                ignore_patterns=["*.safetensors"],
                 cache_dir=str(cache_dir),
             )
         )
@@ -233,7 +232,7 @@ def preflight(
     if source_weight_bytes <= 0:
         raise MetadataError(
             f"Model {model_id!r} has no sized model weight files.",
-            "Use a checkpoint with sized safetensors, bin, pt, or pth weights.",
+            "Use a checkpoint with sized safetensors weights.",
         )
     effective_context = context_length or model.recommended_context_length
     options = quantization_options(hardware, model, effective_context)
@@ -244,7 +243,7 @@ def preflight(
             "Choose a smaller model or context length.",
         )
     output_bytes = int(estimated_model_gib(model.parameters, selected.bits) * 1024**3)
-    cached_weight_bytes = _cached_size(metadata_dir, (".safetensors", ".bin", ".pt", ".pth"))
+    cached_weight_bytes = _cached_size(metadata_dir, WEIGHT_SUFFIXES)
     cached_metadata_bytes = _cached_size(metadata_dir, (".json",))
     required_cache_bytes = max(0, source_weight_bytes - cached_weight_bytes) + max(
         0, metadata_bytes - cached_metadata_bytes
@@ -299,8 +298,7 @@ def download_snapshot(result: PreflightResult, cache_dir: Path) -> Path:
             snapshot_download(
                 repo_id=result.model_id,
                 revision=result.resolved_revision,
-                allow_patterns=list(METADATA_PATTERNS)
-                + ["*.safetensors", "*.bin", "*.pth", "*.pt"],
+                allow_patterns=list(METADATA_PATTERNS) + ["*.safetensors"],
                 ignore_patterns=["*.md", "*.png", "*.jpg"],
                 cache_dir=str(cache_dir),
             )
