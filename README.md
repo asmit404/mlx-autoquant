@@ -97,7 +97,7 @@ During a real conversion you get two progress indicators: an aggregate bar while
 
 ## Development
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the fixture, support-matrix, and macOS integration workflow.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the fixture, support-matrix, and macOS integration workflow. The [support matrix](docs/support-matrix.md), [decision-engine design](docs/designs/verified-quantization-engine.md), and [Qwen3 validation checklist](docs/validation/qwen3-27b-tthw.md) document tested boundaries and follow-up validation. See the [changelog](CHANGELOG.md) for release history and [TODOS.md](TODOS.md) for deferred work.
 
 ```bash
 python3 -m venv .venv
