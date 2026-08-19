@@ -4,18 +4,27 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] - 2026-08-19
 
 ### Added
 
-- Pinned metadata preflight with support checks, disk estimates, and a confirmation boundary before tensor downloads.
-- Transactional conversion reports with verification status and diagnostic reports for failed conversions.
-- Contributor guidance for model fixtures and macOS integration checks.
+- Metadata preflight now checks model support, attention metadata, memory, and disk space before tensor downloads.
+- Conversions now produce verified reports and preserve actionable diagnostics when conversion fails.
+- Added pinned Qwen2 support fixtures and contributor guidance for macOS integration checks.
 
 ### Changed
 
-- MLX-LM and Hugging Face Hub dependencies are bounded to tested major/minor ranges.
-- Remote-code conversion is no longer enabled in the first supported workflow.
+- The CLI supports machine-readable preflight and conversion results, explicit confirmation, and `--yes` automation.
+- Only validated Llama and Qwen2 safetensors checkpoints are admitted by automatic preflight.
+- MLX-LM and Hugging Face Hub dependencies remain bounded to tested major/minor ranges, with remote code disabled.
+
+### Fixed
+
+- Forced bit-widths now use the same memory and filesystem safety checks as automatic selection.
+- Incomplete model metadata, unsupported architectures, and conversion races now fail before partial output can be promoted.
+- CI and integration fixtures now exercise the pinned conversion and verification contract.
+
+## [Unreleased]
 
 ## [0.2.0] - 2026-08-13
 
