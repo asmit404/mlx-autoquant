@@ -16,6 +16,8 @@ class ModelProfile:
     head_dim: int
     parameters_exact: bool = False
     max_context_length: int | None = None
+    architecture: str | None = None
+    num_attention_heads: int = 0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -97,4 +99,6 @@ def profile_config(
         head_dim,
         exact_parameters is not None,
         _context_limit(config),
+        (config.get("architectures") or [config.get("model_type") or ""])[0] or None,
+        heads,
     )

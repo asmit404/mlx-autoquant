@@ -1,4 +1,5 @@
 import contextlib
+import inspect
 import io
 import json
 import tempfile
@@ -7,9 +8,12 @@ from pathlib import Path
 from unittest import mock
 
 from mlx_autoquant import cli
+from mlx_autoquant.errors import MetadataError, VerificationError
 from mlx_autoquant.hardware import HardwareProfile
-from mlx_autoquant.model import ModelProfile
+from mlx_autoquant.model import ModelProfile, profile_config
 from mlx_autoquant.planner import choose_quantization
+from mlx_autoquant.preflight import PreflightResult
+from mlx_autoquant.verify import VerificationResult
 
 HW = HardwareProfile("Apple M4", 34_359_738_368, True)
 
@@ -35,12 +39,127 @@ def metadata(tmp: Path, params: int = 7_000_000_000, exact: bool = True):
 
 def patch_metadata(params: int = 7_000_000_000, exact: bool = True):
     tmp = tempfile.TemporaryDirectory()
-    return tmp, mock.patch(
-        "mlx_autoquant.cli._fetch_metadata", return_value=metadata(Path(tmp.name), params, exact)
+    config, exact_count = metadata(Path(tmp.name), params, exact)
+    model = profile_config("example/model", config, exact_count)
+    result = PreflightResult(
+        "example/model",
+        None,
+        "main",
+        Path(tmp.name),
+        model,
+        8192,
+        1_000_000_000,
+        100,
+        100 * 1024**3,
+        1_000_000_000,
+        100 * 1024**3,
+        100 * 1024**3,
+        1_000_000_000,
+        1_000_000_000,
+        "supported",
     )
+    return tmp, mock.patch("mlx_autoquant.cli.preflight", return_value=result)
 
 
 class TestCli(unittest.TestCase):
+    def test_confirmation_cancellation_does_not_download(self) -> None:
+        tmp, patched = patch_metadata()
+        with (
+            patched,
+            mock.patch("mlx_autoquant.cli.detect_hardware", return_value=HW),
+            mock.patch("builtins.input", return_value="n"),
+            mock.patch("mlx_autoquant.cli.download_snapshot") as download,
+        ):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = cli.main(["example/model", "--output", str(Path(tmp.name) / "model")])
+        tmp.cleanup()
+        self.assertEqual(rc, 0)
+        self.assertIn("Conversion cancelled.", out.getvalue())
+        download.assert_not_called()
+
+    def test_confirmation_eof_is_a_clean_error(self) -> None:
+        tmp, patched = patch_metadata()
+        with (
+            patched,
+            mock.patch("mlx_autoquant.cli.detect_hardware", return_value=HW),
+            mock.patch("builtins.input", side_effect=EOFError),
+        ):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                rc = cli.main(["example/model", "--output", str(Path(tmp.name) / "model")])
+        tmp.cleanup()
+        self.assertEqual(rc, 1)
+        self.assertIn("requires confirmation", err.getvalue())
+
+    def test_argparse_rejects_invalid_boundaries(self) -> None:
+        with self.assertRaises(SystemExit) as context:
+            cli.main(["example/model", "--context-length", "0"])
+        self.assertEqual(context.exception.code, 2)
+        with self.assertRaises(SystemExit) as context:
+            cli.main(["example/model", "--verify-tokens", "0"])
+        self.assertEqual(context.exception.code, 2)
+        with self.assertRaises(SystemExit) as context:
+            cli.main(["example/model", "--bits", "9"])
+        self.assertEqual(context.exception.code, 2)
+
+    def test_successfully_promotes_verified_stage(self) -> None:
+        tmp, patched = patch_metadata()
+        output = Path(tmp.name) / "model"
+        snapshot = Path(tmp.name) / "snapshot"
+        snapshot.mkdir()
+        verification = VerificationResult("prompt", "answer", 2, 1.25)
+        with (
+            patched,
+            mock.patch("mlx_autoquant.cli.detect_hardware", return_value=HW),
+            mock.patch("mlx_autoquant.cli.download_snapshot", return_value=snapshot),
+            mock.patch("mlx_lm.convert"),
+            mock.patch("mlx_autoquant.cli._activity_bar", return_value=contextlib.nullcontext()),
+            mock.patch("mlx_autoquant.cli.verify_model", return_value=verification),
+        ):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = cli.main(["example/model", "--output", str(output), "--yes"])
+        self.assertEqual(rc, 0)
+        self.assertTrue(output.is_dir())
+        report = json.loads((output / "autoquant-report.json").read_text())
+        self.assertEqual(report["verification"]["generated_tokens"], 2)
+        self.assertIn("Verification passed", out.getvalue())
+        tmp.cleanup()
+
+    def test_verification_error_writes_diagnostic_and_does_not_promote(self) -> None:
+        tmp, patched = patch_metadata()
+        output = Path(tmp.name) / "model"
+        snapshot = Path(tmp.name) / "snapshot"
+        snapshot.mkdir()
+        with (
+            patched,
+            mock.patch("mlx_autoquant.cli.detect_hardware", return_value=HW),
+            mock.patch("mlx_autoquant.cli.download_snapshot", return_value=snapshot),
+            mock.patch("mlx_lm.convert"),
+            mock.patch("mlx_autoquant.cli._activity_bar", return_value=contextlib.nullcontext()),
+            mock.patch(
+                "mlx_autoquant.cli.verify_model",
+                side_effect=VerificationError("empty response"),
+            ),
+        ):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                rc = cli.main(["example/model", "--output", str(output), "--yes"])
+        self.assertEqual(rc, 1)
+        self.assertFalse(output.exists())
+        diagnostics = list(Path(tmp.name).glob(".model.staging-*-diagnostic.json"))
+        self.assertEqual(len(diagnostics), 1)
+        self.assertIn("verification", diagnostics[0].read_text())
+        tmp.cleanup()
+
+    def test_mlx_lm_converter_contract(self) -> None:
+        from mlx_lm import convert
+
+        parameters = inspect.signature(convert).parameters
+        self.assertTrue({"hf_path", "mlx_path", "revision"}.issubset(parameters))
+        self.assertTrue({"q_group_size", "q_bits", "q_mode"}.issubset(parameters))
+
     def test_json_dry_run(self) -> None:
         tmp, patched = patch_metadata()
         with patched, mock.patch("mlx_autoquant.cli.detect_hardware", return_value=HW):
@@ -86,7 +205,7 @@ class TestCli(unittest.TestCase):
                 rc = cli.main(["example/model", "--output", str(Path(tmp.name))])
         tmp.cleanup()
         self.assertEqual(rc, 1)
-        self.assertIn("not empty", err.getvalue())
+        self.assertIn("already exists", err.getvalue())
 
     def test_keyboard_interrupt_exit_code(self) -> None:
         with (
@@ -115,8 +234,8 @@ class TestCli(unittest.TestCase):
     def test_clean_error_message_on_stdout_errors(self) -> None:
         with (
             mock.patch(
-                "mlx_autoquant.cli._fetch_metadata",
-                side_effect=RuntimeError("Could not fetch metadata for 'nope'"),
+                "mlx_autoquant.cli.preflight",
+                side_effect=MetadataError("Could not fetch metadata for 'nope'"),
             ),
             mock.patch("mlx_autoquant.cli.detect_hardware", return_value=HW),
         ):
@@ -124,7 +243,7 @@ class TestCli(unittest.TestCase):
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                 rc = cli.main(["nope", "--dry-run"])
         self.assertEqual(rc, 1)
-        self.assertIn("error: Could not fetch metadata", err.getvalue())
+        self.assertIn("error [metadata]: Could not fetch metadata", err.getvalue())
         self.assertEqual(out.getvalue(), "")
 
     def test_write_report_flags_estimated_count(self) -> None:
@@ -152,52 +271,53 @@ class TestCli(unittest.TestCase):
         self.assertEqual(cli._format_params(55_000_000), "55M")
         self.assertEqual(cli._format_params(500), "500")
 
-    def test_download_weights_downloads_every_file(self) -> None:
-        files = ["config.json", "model-00001-of-00002.safetensors", "model.safetensors.index.json"]
-        infos = [mock.Mock(size=100), mock.Mock(size=900), mock.Mock(size=50)]
-        api = mock.Mock()
-        api.list_repo_files.return_value = files
-        api.get_paths_info.return_value = infos
-        with (
-            mock.patch("huggingface_hub.HfApi", return_value=api),
-            mock.patch("huggingface_hub.hf_hub_download") as download,
-        ):
-            cli._download_weights("example/model", "main")
-        download.assert_has_calls(
-            [
-                mock.call("example/model", "config.json", revision="main"),
-                mock.call("example/model", "model-00001-of-00002.safetensors", revision="main"),
-                mock.call("example/model", "model.safetensors.index.json", revision="main"),
-            ]
-        )
-
-    def test_download_weights_clean_error(self) -> None:
-        api = mock.Mock()
-        api.list_repo_files.side_effect = Exception("Repository Not Found for url")
-        with (
-            mock.patch("huggingface_hub.HfApi", return_value=api),
-            self.assertRaisesRegex(RuntimeError, "Could not list files"),
-        ):
-            cli._download_weights("nope", None)
-
-    def test_download_weights_ignores_repo_folders_without_size(self) -> None:
-        class RepoFolder:
-            pass
-
-        files = ["folder/", "model.safetensors"]
-        api = mock.Mock()
-        api.list_repo_files.return_value = files
-        api.get_paths_info.return_value = [RepoFolder(), mock.Mock(size=700)]
-        with (
-            mock.patch("huggingface_hub.HfApi", return_value=api),
-            mock.patch("huggingface_hub.hf_hub_download") as download,
-        ):
-            cli._download_weights("example/model", "main")
-        download.assert_called_once_with("example/model", "model.safetensors", revision="main")
-
     def test_activity_bar_starts_and_stops(self) -> None:
         with mock.patch("tqdm.tqdm"), cli._activity_bar("Quantizing model"):
             pass
+
+    def test_conversion_failure_writes_diagnostic(self) -> None:
+        tmp, patched = patch_metadata()
+        output = Path(tmp.name) / "model"
+        snapshot = Path(tmp.name) / "snapshot"
+        snapshot.mkdir()
+        with (
+            patched,
+            mock.patch("mlx_autoquant.cli.detect_hardware", return_value=HW),
+            mock.patch("mlx_autoquant.cli.download_snapshot", return_value=snapshot),
+            mock.patch("mlx_lm.convert", side_effect=ValueError("converter failed")),
+        ):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                rc = cli.main(["example/model", "--output", str(output), "--yes"])
+        diagnostics = list(Path(tmp.name).glob(".model.staging-*-diagnostic.json"))
+        staging = list(Path(tmp.name).glob(".model.staging-*"))
+        tmp.cleanup()
+        self.assertEqual(rc, 1)
+        self.assertEqual(len(diagnostics), 1)
+        self.assertEqual(staging, diagnostics)
+        self.assertIn("Diagnostic report", err.getvalue())
+
+    def test_keyboard_interrupt_cleans_staging_and_writes_diagnostic(self) -> None:
+        tmp, patched = patch_metadata()
+        output = Path(tmp.name) / "model"
+        snapshot = Path(tmp.name) / "snapshot"
+        snapshot.mkdir()
+        with (
+            patched,
+            mock.patch("mlx_autoquant.cli.detect_hardware", return_value=HW),
+            mock.patch("mlx_autoquant.cli.download_snapshot", return_value=snapshot),
+            mock.patch("mlx_lm.convert", side_effect=KeyboardInterrupt),
+        ):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                rc = cli.main(["example/model", "--output", str(output), "--yes"])
+        diagnostics = list(Path(tmp.name).glob(".model.staging-*-diagnostic.json"))
+        staging = list(Path(tmp.name).glob(".model.staging-*"))
+        tmp.cleanup()
+        self.assertEqual(rc, 1)
+        self.assertEqual(len(diagnostics), 1)
+        self.assertEqual(staging, diagnostics)
+        self.assertIn("cancellation", err.getvalue())
 
 
 if __name__ == "__main__":

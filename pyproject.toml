@@ -9,7 +9,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 keywords = ["mlx", "quantization", "apple-silicon", "llm"]
-dependencies = ["mlx-lm>=0.30.0", "huggingface-hub>=0.24.0", "tqdm>=4.66"]
+dependencies = ["mlx-lm>=0.30.0,<0.32.0", "huggingface-hub>=0.24.0,<2.0", "tqdm>=4.66"]
 dynamic = ["version"]
 
 [project.optional-dependencies]
@@ -46,7 +46,8 @@ ignore_missing_imports = true
 warn_unused_configs = true
 warn_redundant_casts = true
 warn_unused_ignores = true
+follow_imports = "skip"
 
 [[tool.mypy.overrides]]
-module = ["mlx_lm.*", "huggingface_hub.*"]
+module = ["mlx.*", "mlx_lm.*", "huggingface_hub.*"]
 follow_imports = "skip"

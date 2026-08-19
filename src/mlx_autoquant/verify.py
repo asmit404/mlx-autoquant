@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from .errors import VerificationError
+
 
 @dataclass(frozen=True)
 class VerificationResult:
@@ -22,13 +24,16 @@ def verify_model(
 ) -> VerificationResult:
     """Load a converted model and generate a short response as a smoke test."""
     if max_tokens <= 0:
-        raise ValueError("max_tokens must be positive")
+        raise VerificationError("Verification token count must be positive.")
 
     try:
         import mlx.core as mx
         from mlx_lm import generate, load
     except ImportError as error:
-        raise RuntimeError("Install dependencies with: pip install -e .") from error
+        raise VerificationError(
+            "MLX verification dependencies are not installed.",
+            "Install with `pip install mlx-autoquant` on an Apple-silicon Mac.",
+        ) from error
 
     reset_peak_memory = (
         mx.reset_peak_memory if hasattr(mx, "reset_peak_memory") else mx.metal.reset_peak_memory
@@ -37,7 +42,11 @@ def verify_model(
     model, tokenizer = load(str(model_path))
     generated = generate(model, tokenizer, prompt, max_tokens=max_tokens, verbose=False)
     if not generated.strip():
-        raise RuntimeError("Verification generated an empty response.")
+        raise VerificationError(
+            "Verification generated an empty response.",
+            "Retry with a different prompt or inspect the converted model "
+            "in the diagnostic report.",
+        )
 
     get_peak_memory = (
         mx.get_peak_memory if hasattr(mx, "get_peak_memory") else mx.metal.get_peak_memory
